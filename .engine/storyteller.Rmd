@@ -1,0 +1,742 @@
+---
+title: "`r params$project` - Performance Comparison Report"
+subtitle: "Scenario: `r params$scenario` | Runs: `r paste(params$runs, collapse=', ')`"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  flexdashboard::flex_dashboard:
+    self_contained: true
+    orientation: rows
+    vertical_layout: fill
+    responsive: false
+    favicon: Styles/Planit_Icon_Black.png
+    css: Styles/styles.css
+params:
+  project: "Perf Project"
+  scenario: "Registration_Flow"
+  baseline: "run_001"
+  runs: !r c("run_001", "run_002")
+  label_filter: ""
+  excluded_labels: !r character(0)
+  db_path: "Data/Performance_Vault.db"
+  tool: "jmeter"
+  report_id: "performance"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+
+library(DBI)
+library(duckdb)
+library(dplyr)
+library(tidyr)
+library(DT)
+library(ggplot2)
+library(here)
+library(stringr)
+
+```
+
+```{r connection, include = FALSE, cache = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+# Debug: Output runtime parameters
+# cat(sprintf("\n>>> [DEBUG] Vault Path: '%s'\n", params$db_path))
+# cat(sprintf(">>> [DEBUG] Target Tool: '%s'\n", params$tool))
+# cat(sprintf(">>> [DEBUG] Filter Parameter: '%s'\n", params$label_filter))
+
+# Establish connection to DuckDB
+con <- dbConnect(duckdb::duckdb(shared_home = FALSE), dbdir = params$db_path, read_only = TRUE)
+
+# Determine correct table name based on engine selection
+target_table <- paste0("performance_history_", params$tool)
+
+# Validate that the target table exists in the database
+if (!target_table %in% dbListTables(con)) {
+  dbDisconnect(con)
+  stop(paste0("Error: Table '", target_table, "' does not exist in vault."))
+}
+
+# ── Step 1: Resolve Run Identifiers (run_id vs sequence_num) ──
+all_identifiers <- dbGetQuery(con, sprintf(
+  "SELECT DISTINCT run_id, sequence_num FROM %s", target_table
+))
+
+resolved_run_ids <- sapply(params$runs, function(r) {
+  match_by_run_id <- all_identifiers$run_id[all_identifiers$run_id == r]
+  if (length(match_by_run_id) > 0) return(match_by_run_id[1])
+
+  match_by_seq <- all_identifiers$run_id[as.character(all_identifiers$sequence_num) == as.character(r)]
+  if (length(match_by_seq) > 0) return(match_by_seq[1])
+
+  return(NA_character_)
+})
+
+missing_runs <- params$runs[is.na(resolved_run_ids)]
+if (length(missing_runs) > 0) {
+  dbDisconnect(con)
+  stop(paste0("Error: Run(s) not found in vault: ", paste(missing_runs, collapse = ", ")))
+}
+
+resolved_run_ids <- unname(resolved_run_ids)
+formatted_run_ids <- paste0("'", gsub("'", "''", resolved_run_ids), "'", collapse = ", ")
+
+# ── Step 2: Tool-Aware Schema Projections ──
+bytes_col         <- if (params$tool == "jmeter") "bytes" else "0 AS bytes"
+response_code_col <- if (params$tool == "jmeter") "responseCode" else "'0' AS responseCode"
+
+# ── Step 3: Dynamic Multi-Keyword SQL Filter Construction ──
+sql_filter_clause <- ""
+
+if (!is.null(params$label_filter) &&
+    nzchar(trimws(params$label_filter)) &&
+    toupper(trimws(params$label_filter)) != "NONE") {
+
+  # Split on commas, strip surrounding whitespace, and remove empty entries
+  raw_tokens <- unlist(strsplit(params$label_filter, ","))
+  cleaned_tokens <- trimws(raw_tokens)
+  cleaned_tokens <- cleaned_tokens[nzchar(cleaned_tokens)]
+
+  if (length(cleaned_tokens) > 0) {
+    # Escape single quotes for SQL safety
+    escaped_tokens <- gsub("'", "''", cleaned_tokens)
+
+    # Generate a LIKE condition for each keyword
+    token_clauses <- sprintf("label LIKE '%%%s%%'", escaped_tokens)
+
+    # Join with OR logic and wrap in parentheses
+    sql_filter_clause <- paste0(" AND (", paste(token_clauses, collapse = " OR "), ")")
+
+    message(sprintf(">>> [SQL FILTER] Applying DuckDB Predicate: %s", sql_filter_clause))
+  }
+}
+
+# ── Step 4: Assemble Optimized Columnar Query ──
+query <- sprintf("
+  SELECT
+    sequence_num,
+    run_id,
+    project_name,
+    test_name,
+    app_name,
+    csv_filename,
+    thread_group,
+    timestamp,
+    elapsed,
+    label,
+    success,
+    %s,
+    %s,
+    user_index
+  FROM %s
+  WHERE run_id IN (%s)%s
+  ORDER BY timestamp ASC
+", bytes_col, response_code_col, target_table, formatted_run_ids, sql_filter_clause)
+
+# Execute query and extract dataset
+raw_data <- dbGetQuery(con, query)
+dbDisconnect(con)
+
+effective_exclusions <- params$excluded_labels
+
+if (!is.null(params$label_filter) &&
+    nzchar(trimws(params$label_filter))) {
+
+  requested_labels <- trimws(unlist(strsplit(params$label_filter, ",")))
+
+  effective_exclusions <- setdiff(
+    effective_exclusions,
+    requested_labels
+  )
+}
+
+raw_data <- raw_data %>%
+  filter(!label %in% effective_exclusions)
+
+# ── Step 5: Post-Extraction Dataset Validation ──
+if (nrow(raw_data) == 0) {
+  stop(paste0(
+    "Error: No transactions matched query criteria.\n",
+    "  Runs: ", paste(resolved_run_ids, collapse = ", "), "\n",
+    "  Filter: '", params$label_filter, "'"
+  ))
+}
+
+if (!"label" %in% colnames(raw_data)) {
+  stop("Column 'label' is missing from retrieved dataset. Verify schema mapping.")
+}
+```
+
+```{r data_preparation, include = FALSE, cache = FALSE, echo = F, warning = F, message = F}
+# Always group by label
+group_col <- "label"
+
+# executionGroup = thread_group for both tools
+raw_data <- raw_data %>% mutate(executionGroup = thread_group)
+
+# Compute summary metrics
+summary_stats <- raw_data %>%
+  rename(current_group = !!sym(group_col)) %>%
+  mutate(
+    success_clean = tolower(trimws(as.character(success))),
+    success = success_clean %in% c("true", "yes", "1") | success == TRUE
+  ) %>%
+  group_by(app_name, run_id, thread_group, current_group) %>%
+  summarise(
+    `min(ms)`     = round(min(elapsed, na.rm=TRUE), 0),
+    `avg(ms)`     = round(mean(elapsed, na.rm=TRUE), 0),
+    `p90(ms)`     = round(quantile(elapsed, 0.90, na.rm=TRUE), 0),
+    `p95(ms)`     = round(quantile(elapsed, 0.95, na.rm=TRUE), 0),
+    `max(ms)`     = round(max(elapsed, na.rm=TRUE), 0),
+    totalCount = n(),
+    passCount  = sum(success, na.rm=TRUE),
+    failCount  = sum(!success, na.rm=TRUE),
+    recievedBytes = format(round(mean(bytes, na.rm=TRUE), 0), big.mark=","),
+    .groups='drop'
+  )
+
+# Pivot for side‑by‑side comparison
+comparison <- summary_stats %>%
+  pivot_wider(
+    id_cols     = c(thread_group, current_group),
+    names_from  = run_id,
+    values_from = c(`min(ms)`, `avg(ms)`, `p90(ms)`, `p95(ms)`,
+                    `max(ms)`, totalCount, passCount, failCount, recievedBytes),
+    names_sep   = "\r\n"
+  ) %>%
+  rename(!!sym(group_col) := current_group)
+
+# Slowest transactions (top 1000 per run)
+prepped_logs <- raw_data %>%
+  group_by(run_id, app_name) %>%
+  slice_max(order_by = elapsed, n = 1000, with_ties = FALSE) %>%
+  ungroup() %>%
+  mutate(
+    Application           = app_name,
+    `Response time (ms)`  = as.numeric(elapsed),
+    timestamp             = sub("Z$", "", as.character(timestamp)),
+    success               = ifelse(
+      tolower(trimws(as.character(success))) %in% c("true", "yes", "1"),
+      "TRUE",
+      "FALSE"
+    )
+  ) %>%
+  select(Application, run_id, thread_group, label, `Response time (ms)`, timestamp, success) %>%
+  arrange(desc(`Response time (ms)`))
+
+unique_apps_vector <- sort(unique(prepped_logs$app_name))
+unique_runs_vector <- sort(unique(prepped_logs$run_id), decreasing = TRUE)
+most_recent_run    <- unique_runs_vector[1]
+
+# Error logs
+prepped_error_logs <- raw_data %>%
+  filter(
+    tolower(trimws(as.character(success))) %in% c("false", "no", "0")
+  ) %>%
+  mutate(
+    Application          = app_name,
+    `Response time (ms)` = as.numeric(elapsed),
+    timestamp            = sub("Z$", "", as.character(timestamp)),
+    `Response Code`      = if (params$tool == "jmeter") as.character(responseCode) else "N/A"
+  ) %>%
+  select(Application, run_id, thread_group, label, `Response time (ms)`, `Response Code`, timestamp) %>%
+  arrange(desc(`Response time (ms)`))
+
+# Run selector vectors
+unique_runs_vector <- sort(unique(prepped_logs$run_id), decreasing=TRUE)
+most_recent_run    <- unique_runs_vector[1]
+
+# Build a structured summary object to pass to AI
+ai_summary_data <- list(
+  runs = lapply(resolved_run_ids, function(r) {
+    run_rows <- raw_data %>% filter(run_id == r)
+    list(
+      run_id        = r,
+      sequence_num  = first(run_rows$sequence_num),
+      test_name     = unique(run_rows$test_name)[1],
+      app_name      = unique(run_rows$app_name)[1],
+      start_time    = format(min(run_rows$timestamp, na.rm = TRUE), "%Y-%m-%d %H:%M:%S"),
+      end_time      = format(max(run_rows$timestamp, na.rm = TRUE), "%Y-%m-%d %H:%M:%S"),
+      duration_mins = round(as.numeric(difftime(
+        max(run_rows$timestamp, na.rm = TRUE),
+        min(run_rows$timestamp, na.rm = TRUE),
+        units = "mins"
+      )), 0),
+      total_users   = n_distinct(run_rows$user_index, na.rm = TRUE),
+      total_tx      = nrow(run_rows),
+      throughput    = round(
+        sum(
+          tolower(trimws(as.character(run_rows$success))) %in%
+          c("true", "yes", "1"),
+          na.rm = TRUE
+          ) / as.numeric(difftime(
+            max(run_rows$timestamp, na.rm = TRUE),
+            min(run_rows$timestamp, na.rm = TRUE),
+            units = "secs"
+      )), 2),
+      passed        = sum(tolower(trimws(as.character(run_rows$success))) %in% c("true", "yes")),
+      failed        = sum(tolower(trimws(as.character(run_rows$success))) %in% c("false", "no")),
+      error_rate    = round(
+        sum(tolower(trimws(as.character(run_rows$success))) %in% c("false", "no")) /
+        nrow(run_rows) * 100, 2
+      )
+    )
+  })
+)
+
+# ============================================================
+# SLA EVALUATION — applied globally across all selected runs
+# ============================================================
+sla_results <- list()  # named list keyed by run_id, empty if no SLA defined
+
+sla_file_path <- params_cfg$sla_file_path
+
+if (!is.null(sla_file_path) && nzchar(trimws(sla_file_path)) && file.exists(here::here(sla_file_path))) {
+
+  sla_config <- yaml::read_yaml(here::here(sla_file_path))
+  sla_rules  <- sla_config$sla_rules
+
+  evaluate_sla_rule <- function(actual_value, operator, threshold) {
+    switch(
+      operator,
+      "<="  = actual_value <= threshold,
+      ">="  = actual_value >= threshold,
+      "<"   = actual_value <  threshold,
+      ">"   = actual_value >  threshold,
+      "=="  = actual_value == threshold,
+      NA
+    )
+  }
+
+  # ── Compute the 3 metrics directly per run_id from raw_data ──
+  sla_metrics_per_run <- raw_data %>%
+    mutate(
+      is_pass = tolower(trimws(as.character(success))) %in% c("true", "yes")
+    ) %>%
+    group_by(run_id) %>%
+    summarise(
+      total_users = n_distinct(user_index, na.rm = TRUE),
+      error_rate  = round((sum(!is_pass, na.rm = TRUE) / n()) * 100, 2),
+      throughput  = round(sum(is_pass, na.rm = TRUE) / as.numeric(difftime(
+        max(timestamp, na.rm = TRUE), min(timestamp, na.rm = TRUE), units = "secs"
+      )), 2),
+      .groups = "drop"
+    )
+
+  # ── Evaluate each rule per run_id ──
+  for (i in seq_len(nrow(sla_metrics_per_run))) {
+    run_row <- sla_metrics_per_run[i, ]
+    rid     <- run_row$run_id
+
+    rule_outcomes <- lapply(sla_rules, function(rule) {
+      actual_value <- switch(
+        rule$metric,
+        "total_users" = run_row$total_users,
+        "error_rate"  = run_row$error_rate,
+        "throughput"  = run_row$throughput,
+        NA
+      )
+
+      passed <- if (!is.na(actual_value)) {
+        evaluate_sla_rule(actual_value, rule$operator, rule$threshold)
+      } else {
+        NA
+      }
+
+      list(
+        metric    = rule$metric,
+        label     = rule$label,
+        operator  = rule$operator,
+        threshold = rule$threshold,
+        unit      = if (is.null(rule$unit)) "" else rule$unit,
+        actual    = actual_value,
+        passed    = passed
+      )
+    })
+
+    overall_pass <- all(sapply(rule_outcomes, function(x) isTRUE(x$passed)))
+
+    sla_results[[as.character(rid)]] <- list(
+      run_id       = rid,
+      rules        = rule_outcomes,
+      overall_pass = overall_pass
+    )
+  }
+
+  message(">>> [SLA] Evaluated SLA for ", length(sla_results), " run(s) using ", basename(sla_file_path))
+
+} else {
+  message(">>> [SLA] No sla_file defined or file not found — skipping SLA processing.")
+}
+
+# ============================================================
+# RESPONSE TIME SLA EVALUATION — per-transaction, per-run
+# ============================================================
+rt_sla_results <- list()  # named list keyed by run_id
+
+if (!is.null(sla_file_path) && nzchar(trimws(sla_file_path)) && file.exists(here::here(sla_file_path))) {
+
+  rt_sla_config <- sla_config$response_time_sla
+
+  if (!is.null(rt_sla_config)) {
+
+    rt_metric        <- rt_sla_config$metric           # "p90" or "p95"
+    rt_percentile    <- if (rt_metric == "p90") 0.90 else 0.95
+    rt_default       <- rt_sla_config$default_threshold
+    rt_tolerance_pct <- if (is.null(rt_sla_config$tolerance_pct)) 0 else rt_sla_config$tolerance_pct
+
+    # Build a lookup: label -> threshold (overrides take priority, else default)
+    rt_overrides <- rt_sla_config$overrides
+    rt_threshold_lookup <- if (!is.null(rt_overrides) && length(rt_overrides) > 0) {
+      setNames(
+        sapply(rt_overrides, function(x) x$threshold),
+        sapply(rt_overrides, function(x) x$label)
+      )
+    } else {
+      c()
+    }
+
+    # get_rt_threshold <- function(label) {
+    #   if (label %in% names(rt_threshold_lookup)) {
+    #     unname(rt_threshold_lookup[label])
+    #   } else {
+    #     rt_default
+    #   }
+    # }
+    get_rt_threshold <- function(label) {
+
+      matching_prefixes <- names(rt_threshold_lookup)[
+        startsWith(label, names(rt_threshold_lookup))
+      ]
+
+      if (length(matching_prefixes) > 0) {
+
+        # Use longest match first
+        matching_prefixes <- matching_prefixes[
+          order(nchar(matching_prefixes), decreasing = TRUE)
+        ]
+
+        return(
+          unname(
+            rt_threshold_lookup[
+              matching_prefixes[1]
+            ]
+          )
+        )
+      }
+
+      rt_default
+    }
+
+    # ── Compute percentile RT per run_id per label ──
+    rt_per_label <- raw_data %>%
+      group_by(run_id, label) %>%
+      summarise(
+        actual_rt = round(quantile(elapsed, rt_percentile, na.rm = TRUE), 0),
+        .groups   = "drop"
+      ) %>%
+      rowwise() %>%
+      mutate(
+        threshold      = get_rt_threshold(label),
+        tolerance_band = threshold * (1 + rt_tolerance_pct / 100),
+        passed         = actual_rt <= tolerance_band,
+        breach_pct     = round(((actual_rt - threshold) / threshold) * 100, 1)
+      ) %>%
+      ungroup()
+
+    # ── Summarise per run_id ──
+    for (rid in unique(rt_per_label$run_id)) {
+      run_labels <- rt_per_label %>% filter(run_id == rid)
+
+      total_labels  <- nrow(run_labels)
+      failed_labels <- run_labels %>% filter(!passed)
+      failed_count  <- nrow(failed_labels)
+
+      top_breaches <- failed_labels %>%
+        arrange(desc(breach_pct)) %>%
+        slice_head(n = 10) %>%
+        select(label, actual_rt, threshold, breach_pct)
+
+      rt_sla_results[[as.character(rid)]] <- list(
+        run_id        = rid,
+        metric        = rt_metric,
+        total_labels  = total_labels,
+        failed_count  = failed_count,
+        passed_count  = total_labels - failed_count,
+        top_breaches  = top_breaches,
+        all_labels    = run_labels
+      )
+    }
+
+    message(">>> [SLA] Response Time SLA (", toupper(rt_metric), ") evaluated for ", length(rt_sla_results), " run(s).")
+
+  }
+}
+
+# ── Helper to get SLA threshold for a metric ──
+get_sla_threshold <- function(run_id, metric_name) {
+  key <- as.character(run_id)
+  if (length(sla_results) == 0 || is.null(sla_results[[key]])) return(NULL)
+  rule <- Filter(function(r) r$metric == metric_name, sla_results[[key]]$rules)
+  if (length(rule) == 0) return(NULL)
+  list(
+    threshold = rule[[1]]$threshold,
+    operator  = rule[[1]]$operator,
+    unit      = rule[[1]]$unit %||% ""
+  )
+}
+
+# Helper to safely get RT SLA result for a run
+get_run_rt_sla <- function(run_id) {
+  key <- as.character(run_id)
+  if (length(rt_sla_results) == 0 || is.null(rt_sla_results[[key]])) {
+    return(NULL)
+  }
+  rt_sla_results[[key]]
+}
+
+# Helper to get overall SLA status for a run
+get_run_sla_status <- function(run_id) {
+  key <- as.character(run_id)
+
+  has_basic_sla <- length(sla_results) > 0 && !is.null(sla_results[[key]])
+  has_rt_sla    <- length(rt_sla_results) > 0 && !is.null(rt_sla_results[[key]])
+
+  if (!has_basic_sla && !has_rt_sla) {
+    return(NA)
+  }
+
+  basic_pass <- if (has_basic_sla) sla_results[[key]]$overall_pass else TRUE
+  rt_pass    <- if (has_rt_sla) (rt_sla_results[[key]]$failed_count == 0) else TRUE
+
+  basic_pass && rt_pass
+}
+
+get_app_tps_threshold <- function(app_name) {
+
+  throughput_rule <- Filter(
+    function(x) x$metric == "throughput",
+    sla_config$sla_rules
+  )[[1]]
+
+  overrides <- throughput_rule$application_thresholds
+
+  app_rule <- Filter(
+    function(x) identical(x$app_name, app_name),
+    overrides
+  )
+
+  if (length(app_rule) > 0) {
+    return(as.numeric(app_rule[[1]]$threshold))
+  }
+
+  throughput_rule$threshold
+}
+
+# ============================================================
+# CHART VISIBILITY — controlled via config.yaml "charts:" block
+# Defaults to TRUE (shown) if config missing or key not defined
+# ============================================================
+chart_visibility <- params_cfg$charts
+
+is_chart_enabled <- function(chart_key) {
+  if (is.null(chart_visibility) || is.null(chart_visibility[[chart_key]])) {
+    return(TRUE)  # default: show if not explicitly configured
+  }
+  isTRUE(chart_visibility[[chart_key]]) || identical(tolower(as.character(chart_visibility[[chart_key]])), "true")
+}
+
+```
+
+# Dashboard {data-icon="fa-home"}
+
+## Row
+
+---
+
+```{r dash-executive-summary-loader, child='.engine/Dashboard/dash-executive-summary.Rmd'}
+
+```
+
+```{r dash-scorecard-loader, child='.engine/Dashboard/dash-scorecard.Rmd'}
+
+```
+
+```{r dash-application-health-loader, child='.engine/Dashboard/dash-application-health.Rmd'}
+
+```
+
+<!-- ## Row
+
+### Test Info
+
+```{r info, echo = FALSE}
+library(flexdashboard)
+source(here::here(".engine/Utilities", "utils.R"))
+
+flexdashboard::valueBox(
+                value = "Test Information",
+                color = planitLightGrey
+              )
+```
+
+## Row
+
+---
+
+```{r dash-testSummary-loader, child='.engine/Dashboard/dash-testSummary.Rmd'}
+
+```
+
+## Row
+
+### Metric
+
+```{r metric, echo = FALSE}
+library(flexdashboard)
+source(here::here(".engine/Utilities", "utils.R"))
+
+flexdashboard::valueBox(
+                value = "Performance Metrics",
+                color = planitLightGrey
+              )
+```
+
+## Row
+
+---
+
+```{r dash-metrics-loader, child='.engine/Dashboard/dash-metrics.Rmd'}
+
+```
+
+## Row
+
+```{r dash-rt-sla-loader, child='.engine/Dashboard/dash-rt-sla.Rmd'}
+
+```
+
+## Row
+
+```{r dash-aiSummary-loader, child='.engine/Dashboard/dash-aiSummary.Rmd'}
+
+```
+
+-->
+
+## Row {data-height=60}
+
+```{r dash-sla-disclaimer-loader, child='.engine/Dashboard/dash-sla-disclaimer.Rmd'}
+
+```
+
+# Tables {data-icon="fa-table"}
+
+## Row. {.tabset .tabset-fade}
+
+### <i class="fa fa-balance-scale"></i> Aggregates - Side by Side
+
+```{r tab-aggregates-loader, child='.engine/Tables/tab-aggregates.Rmd'}
+
+```
+
+### <i class="fa fa-hourglass-half"></i> Slowest Transactions
+
+```{r tab-slowest-loader, child='.engine/Tables/tab-slowest.Rmd'}
+
+```
+
+### <i class="fa fa-exclamation-triangle"></i> Error Transactions
+
+```{r tab-errors-loader, child='.engine/Tables/tab-errors.Rmd'}
+
+```
+
+# Charts {data-icon="fa-chart-line"}
+
+## Row {.tabset .tabset-fade .scrollable-tabset-row}
+
+---
+
+`r if (is_chart_enabled("tpmVerticalStack")) "### Overall Throughput (TPM)"`
+
+```{r chart-tpmVerticalStack, child=if (is_chart_enabled("tpmVerticalStack")) '.engine/Charts/chart-tpmVerticalStack.Rmd'}
+
+```
+
+`r if (is_chart_enabled("rawScatterWebGL")) "### Response Time Scatter"`
+
+```{r chart-rawScatterWebGL, child=if (is_chart_enabled("rawScatterWebGL")) '.engine/Charts/chart-rawScatterWebGL.Rmd'}
+
+```
+
+`r if (is_chart_enabled("vUsersPerMinute")) "### Virtual Users (Load)"`
+
+```{r chart-vUsersPerMinute, child=if (is_chart_enabled("vUsersPerMinute")) '.engine/Charts/chart-vUsersPerMinute.Rmd'}
+
+```
+
+`r if (is_chart_enabled("tpmVerticalStackByCsvFilename")) "### Throughput by App"`
+
+```{r chart-tpmVerticalStackByCsvFilename, child=if (is_chart_enabled("tpmVerticalStackByCsvFilename")) '.engine/Charts/chart-tpmVerticalStackByCsvFilename.Rmd'}
+
+```
+
+`r if (is_chart_enabled("throughputVsRT")) "### Throughput vs Response Time"`
+
+```{r chart-throughputVsRT, child=if (is_chart_enabled("throughputVsRT")) '.engine/Charts/chart-throughputVsRT.Rmd'}
+
+```
+
+`r if (is_chart_enabled("rtVsUserLoad")) "### Response Time vs Load"`
+
+```{r chart-rtVsUserLoad, child=if (is_chart_enabled("rtVsUserLoad")) '.engine/Charts/chart-rtVsUserLoad.Rmd'}
+
+```
+
+`r if (is_chart_enabled("avgRtBreakdown")) "### Average Response Times"`
+
+```{r chart-avgRtBreakdown, child=if (is_chart_enabled("avgRtBreakdown")) '.engine/Charts/chart-avgRtBreakdown.Rmd'}
+
+```
+
+`r if (is_chart_enabled("pct90RtBreakdown")) "### 90th Percentile RT"`
+
+```{r chart-90pctRtBreakdown, child=if (is_chart_enabled("pct90RtBreakdown")) '.engine/Charts/chart-90pctRtBreakdown.Rmd'}
+
+```
+
+`r if (is_chart_enabled("groupedAvgRT")) "### Avg RT by Transaction"`
+
+```{r chart-groupedAvgRT, child=if (is_chart_enabled("groupedAvgRT")) '.engine/Charts/chart-groupedAvgRT.Rmd'}
+
+```
+
+`r if (is_chart_enabled("groupedPercentiles")) "### 90th Percentile RT by Transaction"`
+
+```{r chart-groupedPercentiles, child=if (is_chart_enabled("groupedPercentiles")) '.engine/Charts/chart-groupedPercentiles.Rmd'}
+
+```
+
+`r if (is_chart_enabled("txCountBreakdown")) "### Transaction Volume"`
+
+```{r chart-txCountBreakdown, child=if (is_chart_enabled("txCountBreakdown")) '.engine/Charts/chart-txCountBreakdown.Rmd'}
+
+```
+
+`r if (is_chart_enabled("errorsPerMinute")) "### Error Rate"`
+
+```{r chart-errorsPerMinute, child=if (is_chart_enabled("errorsPerMinute")) '.engine/Charts/chart-errorsPerMinute.Rmd'}
+
+```
+
+`r if (is_chart_enabled("rawScatterWebGLByCsvFilename")) "### RT Scatter by App"`
+
+```{r chart-rawScatterWebGLByCsvFilename, child=if (is_chart_enabled("rawScatterWebGLByCsvFilename")) '.engine/Charts/chart-rawScatterWebGLByCsvFilename.Rmd'}
+
+```
+
+<!-- ### Box Plot -->
+<!-- ```{r chart-boxplotComparison, child='.engine/Charts/chart-boxplotComparison.Rmd'} -->
+<!-- ``` -->
+
+<!-- ### Percentile Distribution -->
+<!-- ```{r chart-percentileDistribution, child='.engine/Charts/chart-percentileDistribution.Rmd'} -->
+<!-- ``` -->

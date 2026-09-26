@@ -1,0 +1,296 @@
+```{r dash-scorecard, echo=FALSE, results='asis'}
+library(dplyr)
+library(htmltools)
+
+# ============================================================
+# IDENTIFY CURRENT AND BASELINE RUNS
+# ============================================================
+
+run_summary <- raw_data %>%
+  mutate(
+    is_pass = tolower(trimws(as.character(success))) %in%
+      c("true", "yes", "1")
+  ) %>%
+  group_by(run_id) %>%
+  summarise(
+    sequence_num = first(sequence_num),
+    users = n_distinct(user_index, na.rm = TRUE),
+    tx_count = n(),
+    pass_count = sum(is_pass, na.rm = TRUE),
+    duration_secs = as.numeric(
+      difftime(
+        max(timestamp, na.rm = TRUE),
+        min(timestamp, na.rm = TRUE),
+        units = "secs"
+      )
+    ),
+    throughput = round(pass_count / duration_secs, 2),
+    error_rate = round(
+      sum(
+        !tolower(trimws(as.character(success))) %in% c("true", "yes", "1"),
+        na.rm = TRUE
+      ) / tx_count * 100,
+      2
+    ),
+    .groups = "drop"
+  )
+
+current <- run_summary %>%
+  filter(sequence_num == max(sequence_num))
+
+baseline <- run_summary %>%
+  filter(sequence_num == min(sequence_num))
+
+current_run_id  <- current$run_id[1]
+baseline_run_id <- baseline$run_id[1]
+
+# ============================================================
+# RT SLA PASS RATE
+# ============================================================
+
+current_rt <- get_run_rt_sla(current_run_id)
+baseline_rt <- get_run_rt_sla(baseline_run_id)
+
+current_rt_pass_rate <- NA
+baseline_rt_pass_rate <- NA
+
+if (!is.null(current_rt) &&
+    current_rt$total_labels > 0) {
+
+  current_rt_pass_rate <- round(
+    (current_rt$passed_count /
+       current_rt$total_labels) * 100,
+    1
+  )
+}
+
+if (!is.null(baseline_rt) &&
+    baseline_rt$total_labels > 0) {
+
+  baseline_rt_pass_rate <- round(
+    (baseline_rt$passed_count /
+       baseline_rt$total_labels) * 100,
+    1
+  )
+}
+
+# ============================================================
+# RESPONSE TIME
+# ============================================================
+
+current_p95 <- raw_data %>%
+  filter(run_id == current_run_id) %>%
+  summarise(
+    v = round(
+      quantile(elapsed, 0.95, na.rm = TRUE),
+      0
+    )
+  ) %>%
+  pull(v)
+
+baseline_p95 <- raw_data %>%
+  filter(run_id == baseline_run_id) %>%
+  summarise(
+    v = round(
+      quantile(elapsed, 0.95, na.rm = TRUE),
+      0
+    )
+  ) %>%
+  pull(v)
+
+# ============================================================
+# DELTA HELPER
+# ============================================================
+
+delta_text <- function(current,
+                       baseline,
+                       lower_is_better = FALSE) {
+
+  if (is.na(current) || is.na(baseline)) {
+    return("—")
+  }
+
+  if (baseline == 0) {
+
+    if (current == 0) {
+      return("▬ 0%")
+    }
+
+    return(
+      "<span class='status-fail'>New Errors</span>"
+    )
+  }
+
+  delta <- round(
+    ((current - baseline) / baseline) * 100,
+    1
+  )
+
+  if (delta == 0) {
+    return("▬ 0.00%")
+  }
+
+  if (lower_is_better) {
+
+    if (delta < 0) {
+
+      return(
+        sprintf(
+          "<span class='status-pass'>▼ %.1f%%</span>",
+          abs(delta)
+        )
+      )
+    }
+
+    return(
+      sprintf(
+        "<span class='status-fail'>▲ %.1f%%</span>",
+        delta
+      )
+    )
+  }
+
+  if (delta > 0) {
+
+    return(
+      sprintf(
+        "<span class='status-pass'>▲ %.1f%%</span>",
+        delta
+      )
+    )
+  }
+
+  sprintf(
+    "<span class='status-fail'>▼ %.1f%%</span>",
+    abs(delta)
+  )
+}
+
+# ============================================================
+# SCORECARD HTML
+# ============================================================
+
+scorecard_html <- sprintf(
+'
+<div class="executive-summary">
+
+<h3 class="scorecard-header">
+Current vs Baseline Scorecard
+</h3>
+
+<table class="scorecard-table" style="margin-top:0;">
+
+<tr>
+<th>Metric</th>
+<th>Current</th>
+<th>Baseline</th>
+<th>Delta</th>
+</tr>
+
+<tr>
+<td>Virtual Users</td>
+<td class=\"numeric-cell\">%s</td>
+<td class=\"numeric-cell\">%s</td>
+<td class=\"numeric-cell\">%s</td>
+</tr>
+
+<tr>
+<td>Transaction Count</td>
+<td class=\"numeric-cell\">%s</td>
+<td class=\"numeric-cell\">%s</td>
+<td class=\"numeric-cell\">%s</td>
+</tr>
+
+<tr>
+<td>Throughput (Success)</td>
+<td class=\"numeric-cell\">%s tps</td>
+<td class=\"numeric-cell\">%s tps</td>
+<td class=\"numeric-cell\">%s</td>
+</tr>
+
+<tr>
+<td>Error Rate</td>
+<td class=\"numeric-cell\">%s%%</td>
+<td class=\"numeric-cell\">%s%%</td>
+<td class=\"numeric-cell\">%s</td>
+</tr>
+
+<tr>
+<td>User Journey SLA Pass Rate</td>
+<td class=\"numeric-cell\">%s%%</td>
+<td class=\"numeric-cell\">%s%%</td>
+<td class=\"numeric-cell\">%s</td>
+</tr>
+
+<tr>
+<td>P95 Response Time</td>
+<td class=\"numeric-cell\">%s ms</td>
+<td class=\"numeric-cell\">%s ms</td>
+<td class=\"numeric-cell\">%s</td>
+</tr>
+
+</table>
+
+</div>
+',
+
+# Users
+format(current$users[1], big.mark = ","),
+format(baseline$users[1], big.mark = ","),
+
+delta_text(
+  current$users[1],
+  baseline$users[1]
+),
+
+# Transactions
+format(current$tx_count[1], big.mark = ","),
+format(baseline$tx_count[1], big.mark = ","),
+
+delta_text(
+  current$tx_count[1],
+  baseline$tx_count[1]
+),
+
+# Throughput
+current$throughput[1],
+baseline$throughput[1],
+
+delta_text(
+  current$throughput[1],
+  baseline$throughput[1]
+),
+
+# Error Rate
+current$error_rate[1],
+baseline$error_rate[1],
+
+delta_text(
+  current$error_rate[1],
+  baseline$error_rate[1],
+  lower_is_better = TRUE
+),
+
+# RT SLA Pass Rate
+current_rt_pass_rate,
+baseline_rt_pass_rate,
+
+delta_text(
+  current_rt_pass_rate,
+  baseline_rt_pass_rate
+),
+
+# P95
+current_p95,
+baseline_p95,
+
+delta_text(
+  current_p95,
+  baseline_p95,
+  lower_is_better = TRUE
+)
+
+)
+
+HTML(scorecard_html)
+```

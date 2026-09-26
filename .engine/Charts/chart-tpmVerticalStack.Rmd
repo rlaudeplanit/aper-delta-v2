@@ -1,0 +1,153 @@
+```{r tpmVerticalStack, echo=FALSE, message=FALSE, warning=FALSE}
+source(here::here(".engine/Utilities", "utils.R"))
+library(plotly)
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+
+# ============================================================
+# 1. TRUNCATE TIMESTAMPS + CALCULATE TRANSACTION VOLUME
+#    - Group by app_name to keep Application in the tooltip
+# ============================================================
+tpm_data <- raw_data %>%
+  mutate(
+    minute_mark = as.POSIXct(format(timestamp, "%Y-%m-%d %H:%M:00"), tz = "UTC")
+  ) %>%
+  group_by(app_name, run_id, thread_group, label, minute_mark) %>%
+  summarise(tx_count = n(), .groups = "drop")
+
+# ============================================================
+# 2. COMPUTE TOTAL COUNT PER MINUTE (for tooltip)
+#    - Totals are calculated per run/minute across ALL applications
+# ============================================================
+tpm_totals <- tpm_data %>%
+  group_by(run_id, minute_mark) %>%
+  summarise(total_per_minute = sum(tx_count), .groups = "drop")
+
+tpm_data <- tpm_data %>%
+  left_join(tpm_totals, by = c("run_id", "minute_mark"))
+
+# ============================================================
+# 3. COLOR PALETTE ASSIGNMENT
+# ============================================================
+all_unique_labels  <- sort(unique(tpm_data$label))
+set.seed(42)
+transaction_colors <- setNames(choose_palette(length(all_unique_labels)), all_unique_labels)
+
+tpm_data <- tpm_data %>%
+  mutate(label = factor(label, levels = all_unique_labels))
+
+subtitle_text <- paste(sort(unique(tpm_data$run_id)), collapse = " vs ")
+
+# ============================================================
+# 4. BUILD GGPLOT
+#    - X = Timeline, Y = TPM
+#    - Facet side-by-side strictly by run_id
+# ============================================================
+tpm_plot <- ggplot(
+  tpm_data,
+  aes(
+    x    = minute_mark,
+    y    = tx_count,
+    fill = label,
+    text = paste0(
+      "Thread Group: ",         thread_group,
+      "\nRun ID: ",             run_id,
+      "\nApplication: ",        app_name,
+      "\nTransaction: ",        label,
+      "\nCount: ",              tx_count, " trx/min",
+      "\nTotal This Minute: ",  total_per_minute, " trx/min"
+    )
+  )
+) +
+  geom_bar(
+    stat     = "identity",
+    position = "stack",
+    width    = 45
+  ) +
+  scale_fill_manual(values = transaction_colors, drop = FALSE) +
+  labs(
+    x = "Timeline (Minute Intervals)",
+    y = "Transactions Per Minute",
+    fill = "Label"
+  ) +
+  # Place runs side-by-side
+  facet_grid(. ~ run_id, scales = "free_x") +
+  theme_minimal() +
+  theme(
+    plot.title       = element_blank(),
+    legend.position  = "right",
+    panel.spacing    = unit(1.5, "lines"),
+    # Style the run_id headers at the top of the columns
+    strip.text.x     = element_text(family = "Consolas", size = 12, color = "#333", face = "bold", margin = margin(b = 10)),
+    strip.background = element_rect(fill = "#f0f0f0", color = NA),
+    axis.text.x      = element_text(angle = 45, hjust = 1, family = "Consolas", size = 10),
+    axis.text.y      = element_text(family = "Consolas", size = 10),
+    axis.title.x     = element_text(family = "Consolas", size = 12, color = "#333", margin = margin(t = 10)),
+    axis.title.y     = element_text(family = "Consolas", size = 12, color = "#333", margin = margin(r = 20))
+  )
+
+# ============================================================
+# 5. CONVERT TO PLOTLY
+# ============================================================
+tpm_plotly <- ggplotly(tpm_plot, tooltip = "text", height = 550)
+
+# ============================================================
+# 6. LAYOUT CONFIG
+# ============================================================
+tpm_layout_config <- list(
+  showlegend = TRUE,
+  # Set left margin to 120 to prevent large Y-axis numbers from clipping
+  margin     = list(l = 120, r = 40, b = 80, t = 80),
+  dragmode   = FALSE,
+  hoverlabel = list(bgcolor = "white"),
+  title      = list(
+    text    = paste0(
+      "<b>Transactions per Minute</b>",
+      "<br><sup>Runs: ", subtitle_text, "</sup>"
+    ),
+    x       = 0,
+    xanchor = "left",
+    font    = list(size = 14, family = "Consolas", color = "#333")
+  )
+)
+
+# Lock the side-by-side axes to prevent accidental zooming/panning safely
+for (i in 1:10) {
+  x_name <- if (i == 1) "xaxis" else paste0("xaxis", i)
+  y_name <- if (i == 1) "yaxis" else paste0("yaxis", i)
+
+  tpm_layout_config[[x_name]] <- list(fixedrange = TRUE)
+  tpm_layout_config[[y_name]] <- list(fixedrange = TRUE, automargin = TRUE)
+}
+
+tpm_plotly <- do.call(layout, c(list(tpm_plotly), tpm_layout_config)) %>%
+  plotly::config(
+    responsive     = TRUE,
+    displayModeBar = TRUE,
+    toImageButtonOptions = list(
+      format   = "png",
+      filename = paste0("Transactions_Per_Minute_Combined_", Sys.Date()),
+      height   = 550,
+      width    = 1400
+    ),
+    modeBarButtonsToRemove = list(
+      "zoom2d", "pan2d", "select2d", "lasso2d", "zoomIn2d", "zoomOut2d",
+      "autoScale2d", "resetScale2d", "hoverClosestCartesian", "hoverCompareCartesian"
+    )
+  )
+
+# ============================================================
+# 7. MOUNT HTML VIEWPORT
+# ============================================================
+htmltools::tagList(
+  htmltools::tags$div(
+    style = "width: 100%; overflow: hidden; border: 1px solid #e3e3e3; padding: 10px;",
+    tpm_plotly
+  ),
+  render_observation_panel(
+    chart_id = "chart_tpmVerticalStack"
+  )
+)
+
+```

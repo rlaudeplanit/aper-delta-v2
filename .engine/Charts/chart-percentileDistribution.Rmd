@@ -1,0 +1,181 @@
+```{r chart_percentileDistribution, echo=FALSE, message=FALSE, warning=FALSE}
+source(here::here(".engine/Utilities", "utils.R"))
+library(plotly)
+library(dplyr)
+library(purrr)
+
+unique_files <- sort(unique(raw_data$app_name))
+
+# Global run colors
+unique_runs <- sort(unique(raw_data$run_id))
+set.seed(42)
+run_colors  <- setNames(choose_palette(length(unique_runs)), unique_runs)
+
+plots <- map(unique_files, function(f) {
+  file_data <- raw_data %>%
+    filter(app_name == f)
+
+  if (nrow(file_data) == 0) {
+    return(
+      htmltools::tags$div(
+        
+        htmltools::tags$div(
+          style = "width: 100%; border: 1px solid #e3e3e3; padding: 20px; color: #999; font-family: Consolas; font-size: 12px;",
+          paste0("No data available for: ", f)
+        )
+      )
+    )
+  }
+
+  subtitle_text <- build_run_testname_subtitle(
+    file_data %>% distinct(run_id, test_name)
+  )
+
+  # ============================================================
+  # 1. PREPARE DATA
+  #    - Sample per run to keep HTML size manageable
+  #    - Cap at 5000 per run per label
+  # ============================================================
+  violin_data <- file_data %>%
+    group_by(run_id, label) %>%
+    sample_n(size = min(n(), 5000), replace = FALSE) %>%
+    ungroup() %>%
+    mutate(
+      run_id = factor(run_id, levels = sort(unique(run_id))),
+      label  = as.character(label)
+    )
+
+  all_labels  <- sort(unique(violin_data$label))
+  file_runs   <- sort(unique(as.character(violin_data$run_id)))
+
+  # ============================================================
+  # 2. DYNAMIC HEIGHT — scale by number of labels
+  # ============================================================
+  num_labels     <- length(all_labels)
+  dynamic_height <- max(500, (num_labels * 60) + 200)
+
+  # ============================================================
+  # 3. BUILD PLOTLY VIOLIN + BOX
+  #    - One violin per run_id per label
+  #    - Overlay box plot inside violin
+  #    - Show mean point
+  # ============================================================
+  pl <- plot_ly(height = dynamic_height)
+
+  for (r in file_runs) {
+    run_data <- violin_data %>% filter(run_id == r)
+    col      <- run_colors[[as.character(r)]]
+
+    pl <- pl %>%
+      add_trace(
+        data        = run_data,
+        type        = "violin",
+        x           = ~elapsed,
+        y           = ~label,
+        name        = paste0("Run ", r),
+        legendgroup = paste0("run_", r),
+        orientation = "h",
+        side        = "positive",
+        box = list(
+          visible = TRUE,
+          fillcolor = col,
+          line      = list(color = "#222222", width = 1)
+        ),
+        meanline = list(
+          visible = TRUE,
+          color   = "#ffffff",
+          width   = 2
+        ),
+        points    = FALSE,
+        fillcolor = paste0(
+          "rgba(",
+          paste(as.integer(col2rgb(col)), collapse = ","),
+          ",0.4)"
+        ),
+        line      = list(color = col, width = 1.5),
+        spanmode  = "hard",
+        text      = ~paste0(
+          "Run ID: ",        run_id,
+          "\nTransaction: ", label,
+          "\nResponse Time: ", round(elapsed, 0), " ms"
+        ),
+        hoverinfo = "text"
+      )
+  }
+
+  pl <- pl %>%
+    layout(
+      title = list(
+        text    = paste0(
+          "<b>Percentile Distribution (Violin): ", tools::file_path_sans_ext(f),
+          "<br><sup>", subtitle_text, "</sup></b>"
+        ),
+        x       = 0,
+        xanchor = "left",
+        font    = list(size = 14, family = "Consolas", color = "#333")
+      ),
+      xaxis = list(
+        title      = "Response Time (ms)",
+        fixedrange = TRUE,
+        automargin = TRUE,
+        rangemode  = "tozero",
+        titlefont  = list(family = "Consolas", size = 12, color = "#333"),
+        tickfont   = list(family = "Consolas", size = 10)
+      ),
+      yaxis = list(
+        title      = "Transaction",
+        fixedrange = TRUE,
+        automargin = TRUE,
+        titlefont  = list(family = "Consolas", size = 12, color = "#333"),
+        tickfont   = list(family = "Consolas", size = 10),
+        categoryorder = "category descending"
+      ),
+      violinmode = "overlay",
+      violingap  = 0.3,
+      violingroupgap = 0.1,
+      legend = list(
+        orientation = "h",
+        x           = 0,
+        y           = -0.15,
+        font        = list(family = "Consolas", size = 10)
+      ),
+      showlegend = TRUE,
+      margin     = list(l = 80, r = 40, b = 100, t = 80),
+      dragmode   = FALSE,
+      hoverlabel = list(bgcolor = "white"),
+      height     = dynamic_height
+    ) %>%
+    plotly::config(
+      responsive     = TRUE,
+      displayModeBar = TRUE,
+      toImageButtonOptions = list(
+        format   = "png",
+        filename = paste0("Percentile_Distribution_", tools::file_path_sans_ext(f), "_", Sys.Date()),
+        height   = dynamic_height,
+        width    = 1400
+      ),
+      modeBarButtonsToRemove = list(
+        "zoom2d", "pan2d", "select2d", "lasso2d", "zoomIn2d", "zoomOut2d",
+        "autoScale2d", "resetScale2d", "hoverClosestCartesian", "hoverCompareCartesian"
+      )
+    )
+
+  htmltools::tagList(
+    
+    htmltools::tags$div(
+      style = "width: 100%; overflow: hidden; border: 1px solid #e3e3e3; padding: 10px;",
+      pl
+    ),
+    render_observation_panel(
+      chart_id = paste0(
+        "chart_percentileDistribution_",
+        f
+      )
+    )
+  )
+})
+
+htmltools::tagList(
+  Filter(Negate(is.null), plots)
+)
+```

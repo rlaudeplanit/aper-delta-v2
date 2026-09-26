@@ -1,0 +1,163 @@
+```{r rawScatterWebGLByCsvFilename, echo=FALSE, message=FALSE, warning=FALSE}
+source(here::here(".engine/Utilities", "utils.R"))
+library(plotly)
+library(dplyr)
+library(ggplot2)
+library(purrr)
+
+unique_apps  <- sort(unique(raw_data$app_name))
+
+plots <- map(unique_apps, function(app) {
+  file_data <- raw_data %>%
+    filter(app_name == app)
+
+  if (nrow(file_data) == 0) {
+    return(
+      htmltools::tags$div(
+        
+        htmltools::tags$div(
+          style = "width: 100%; border: 1px solid #e3e3e3; padding: 20px; color: #999; font-family: Consolas; font-size: 12px;",
+          paste0("No data available for: ", app)
+        )
+      )
+    )
+  }
+
+  # ============================================================
+  # 1. COLOR PALETTE ASSIGNMENT
+  # ============================================================
+  all_unique_labels  <- sort(unique(file_data$label))
+  set.seed(42)
+  transaction_colors <- setNames(choose_palette(length(all_unique_labels)), all_unique_labels)
+
+  # ============================================================
+  # 2. SAMPLE + PREPARE SCATTER DATA
+  # ============================================================
+  scatter_data <- file_data %>%
+    group_by(run_id) %>%
+    sample_n(size = min(n(), 20000)) %>%
+    ungroup() %>%
+    mutate(
+      label          = factor(label, levels = all_unique_labels),
+      formatted_time = format(timestamp, "%Y-%m-%d %H:%M:%S")
+    )
+
+  # ============================================================
+  # 3. BUILD GGPLOT
+  # ============================================================
+  p <- ggplot(
+    scatter_data,
+    aes(
+      x    = timestamp,
+      y    = elapsed,
+      fill = label,
+      text = paste0(
+        "Business Flow: ",   thread_group,
+        "\nRun ID: ",        run_id,
+        "\nTransaction: ",   label,
+        "\nApplication: ",   app,
+        "\nTime: ",          formatted_time,
+        "\nResponse Time: ", round(elapsed, 0), " ms"
+      )
+    )
+  ) +
+    geom_point(
+      shape  = 21,
+      color  = "#222222",
+      stroke = 0.2,
+      alpha  = 0.5,
+      size   = 2
+    ) +
+    scale_fill_manual(values = transaction_colors, drop = FALSE) +
+    labs(
+      x = "Timeline Log",
+      y = "Response Time (ms)"
+    ) +
+    facet_wrap(~run_id, scales = "free_x", nrow = 1) +
+    theme_minimal() +
+    theme(
+      plot.title      = element_blank(),
+      legend.position = "none",
+      panel.spacing   = rel(2),
+      axis.text.x     = element_text(angle = 45, hjust = 1, family = "Consolas", size = 10),
+      axis.text.y     = element_text(family = "Consolas", size = 10),
+      axis.title.x    = element_text(family = "Consolas", size = 12, color = "#333", margin = margin(t = 10)),
+      axis.title.y    = element_text(family = "Consolas", size = 12, color = "#333", margin = margin(r = 20)),
+      strip.text      = element_text(family = "Consolas", size = 11, color = "#333", face = "bold")
+    )
+
+  # ============================================================
+  # 4. CONVERT TO PLOTLY + WebGL
+  # ============================================================
+  pl <- ggplotly(p, tooltip = "text", height = 550) %>%
+    toWebGL()
+
+  # ============================================================
+  # 5. LAYOUT CONFIG
+  # ============================================================
+  layout_config <- list(
+    showlegend = TRUE,
+    margin     = list(l = 100, r = 40, b = 80, t = 80),
+    dragmode   = FALSE,
+    hoverlabel = list(bgcolor = "white"),
+    height     = 550,
+    width      = NULL,
+    title      = list(
+      text    = paste0(
+        "<b>Response Time Scatter:</b> ", app
+      ),
+      x       = 0,
+      xanchor = "left",
+      font    = list(size = 14, family = "Consolas", color = "#333")
+    )
+  )
+
+  for (i in 1:10) {
+    x_name <- if (i == 1) "xaxis" else paste0("xaxis", i)
+    y_name <- if (i == 1) "yaxis" else paste0("yaxis", i)
+
+    if (i == 1) {
+      layout_config[[x_name]]$fixedrange <- TRUE
+      layout_config[[y_name]]$fixedrange <- TRUE
+      layout_config[[y_name]]$automargin <- TRUE
+    } else {
+      layout_config[[x_name]] <- list(fixedrange = TRUE)
+      layout_config[[y_name]] <- list(fixedrange = TRUE)
+    }
+  }
+
+  pl <- do.call(layout, c(list(pl), layout_config)) %>%
+    plotly::config(
+      responsive     = TRUE,
+      displayModeBar = TRUE,
+      toImageButtonOptions = list(
+        format   = "png",
+        filename = paste0("Scatter_", app, "_", Sys.Date()),
+        height   = 550,
+        width    = 1400
+      ),
+      modeBarButtonsToRemove = list(
+        "zoom2d", "pan2d", "select2d", "lasso2d", "zoomIn2d", "zoomOut2d",
+        "autoScale2d", "resetScale2d", "hoverClosestCartesian", "hoverCompareCartesian"
+      )
+    )
+
+  htmltools::tagList(
+    
+    htmltools::tags$div(
+      style = "width: 100%; overflow: hidden; border: 1px solid #e3e3e3; padding: 10px;",
+      pl
+    ),
+    render_observation_panel(
+      chart_id = paste0(
+        "chart_rawScatterWebGLCsvFilename_",
+        app
+      )
+    )
+  )
+})
+
+htmltools::tagList(
+  Filter(Negate(is.null), plots)
+)
+```

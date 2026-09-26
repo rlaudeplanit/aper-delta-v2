@@ -1,0 +1,177 @@
+```{r dash-metrics, results='asis', echo=FALSE, warning=FALSE, message=FALSE}
+library(flexdashboard)
+library(purrr)
+library(dplyr)
+library(knitr)
+# --- PART 1: SETUP & STYLING ---
+source(here::here(".engine/Utilities", "utils.R"))
+source(here::here(".engine/Utilities", "dashboard.R"))
+
+# Default colors if missing
+if (!exists("planitDarkGrey")) planitDarkGrey <- "darkgrey"
+
+# --- PART 2: AGGREGATE ALL METRICS (Unified) ---
+combined_df <- raw_data %>%
+  mutate(
+    success_clean = tolower(trimws(as.character(success))),
+    success_bool  = success_clean %in% c("true", "yes") | success == TRUE
+  ) %>%
+  group_by(run_id) %>%
+  summarise(
+    sequence_num = first(sequence_num),   # ← add this
+    total_tx     = n(),
+    pass_tx      = sum(success_bool, na.rm = TRUE),
+    fail_tx      = sum(!success_bool, na.rm = TRUE),
+    duration_sec = as.numeric(difftime(max(timestamp, na.rm = TRUE),
+                                       min(timestamp, na.rm = TRUE),
+                                       units = "secs")),
+    tps          = if_else(duration_sec > 0, total_tx / duration_sec, 0),
+    fail_tps     = if_else(duration_sec > 0, fail_tx  / duration_sec, 0),
+    error_rate   = if_else(total_tx > 0, (fail_tx / total_tx) * 100, 0),
+    .groups      = "drop"
+  ) %>%
+  left_join(compute_total_users(raw_data), by = "run_id") %>%
+  filter(!is.na(total_users) & !is.na(total_tx)) %>%
+  arrange(desc(sequence_num))   # ← current run first
+
+# ── Identify current run ──
+current_run_id <- combined_df$run_id[1]
+
+# ── Helper to get the SLA color for a specific metric of a run ──
+get_metric_sla_color <- function(run_id, metric_name, default_color) {
+  key <- as.character(run_id)
+  if (length(sla_results) == 0 || is.null(sla_results[[key]])) {
+    return(default_color)
+  }
+
+  rule <- Filter(function(r) r$metric == metric_name, sla_results[[key]]$rules)
+
+  if (length(rule) == 0 || is.na(rule[[1]]$passed)) {
+    return(default_color)
+  }
+
+  if (isTRUE(rule[[1]]$passed)) "success" else "danger"
+}
+
+# ── Helper to get failed virtual users vs SLA threshold ──
+get_failed_virtual_users <- function(run_id, actual_users) {
+  key <- as.character(run_id)
+  if (length(sla_results) == 0 || is.null(sla_results[[key]])) {
+    return(NA)
+  }
+
+  rule <- Filter(function(r) r$metric == "total_users", sla_results[[key]]$rules)
+
+  if (length(rule) == 0) {
+    return(NA)
+  }
+
+  threshold <- rule[[1]]$threshold
+  failed    <- threshold - actual_users
+  max(failed, 0)  # never negative — if actual exceeds threshold, failed = 0
+}
+
+# --- PART 3: UNIFIED R TEMPLATE BLOCK ---
+if (nrow(combined_df) > 0) {
+  ticks <- "```"
+  box_template <- paste0(
+    # 1. Users Box 
+    "### %s Users\n\n",
+    ticks, "{r, echo=FALSE}\n",
+    "flexdashboard::valueBox(\n",
+    "  value   = '%s',\n",
+    "  caption = HTML('%s'),\n", # Using HTML() to parse the <br> tags
+    "  icon    = 'fa-users',\n",
+    "  color   = '%s'\n",
+    ")\n",
+    ticks, "\n\n",
+    # 2. Transactions Box 
+    "### %s Transactions\n\n",
+    ticks, "{r, echo=FALSE}\n",
+    "flexdashboard::valueBox(\n",
+    "  value   = '%s',\n",
+    "  caption = HTML('%s'),\n",
+    "  icon    = 'fa-exchange-alt',\n",
+    "  color   = '%s'\n",
+    ")\n",
+    ticks, "\n\n",
+    # 3. Throughput Box 
+    "### %s Throughput\n\n",
+    ticks, "{r, echo=FALSE}\n",
+    "flexdashboard::valueBox(\n",
+    "  value   = '%s',\n",
+    "  caption = HTML('%s'),\n",
+    "  icon    = 'fa-tachometer-alt',\n",
+    "  color   = '%s'\n",
+    ")\n",
+    ticks, "\n"
+  )
+
+  # --- PART 4: COMPILE DYNAMIC ROWS ---
+  src <- pmap_chr(combined_df, function(run_id, total_users, total_tx, pass_tx,
+                                      fail_tx, tps, fail_tps, error_rate,
+                                      duration_sec, sequence_num, ...) {
+
+  # ── Identify current run ──
+  is_current <- (run_id == current_run_id)
+
+  # ── SLA colors — current run only ──
+  users_color <- if (!is_current) planitDarkGrey else get_metric_sla_color(run_id, "total_users", planitDarkGrey)
+  tx_color    <- if (!is_current) planitDarkGrey else get_metric_sla_color(run_id, "error_rate",  passedGreen)
+  tps_color   <- if (!is_current) planitDarkGrey else get_metric_sla_color(run_id, "throughput",  planitDarkGrey)
+
+  # ── Failed virtual users — current run only ──
+  failed_users         <- if (is_current) get_failed_virtual_users(run_id, total_users) else NA
+  failed_users_display <- if (is.na(failed_users)) "0" else format(failed_users, big.mark = ",")
+
+  # ── Get SLA thresholds ──
+  err_sla <- get_sla_threshold(run_id, "error_rate")
+  tps_sla <- get_sla_threshold(run_id, "throughput")
+
+  # 1. User Box
+  users_val <- format(total_users, big.mark = ",")
+  users_cap <- sprintf(
+    "<b>Virtual Users</b><br><br>Total Virtual Users: <b>%s</b><br>Failed Virtual Users: <b>%s</b>",
+    format(total_users, big.mark = ","),
+    failed_users_display
+  )
+
+  # 2. Transaction Box
+  tx_val <- format(pass_tx, big.mark = ",")
+  tx_cap <- sprintf(
+    "<b>Passed Transactions</b><br><br>Total Transactions: <b>%s</b><br>Failed Transactions: <b>%s</b><br>Error Rate: <b>%s%%</b>%s",
+    format(total_tx, big.mark = ","),
+    format(fail_tx, big.mark = ","),
+    format(round(error_rate, 2), nsmall = 2),
+    # ── Append SLA threshold if defined ──
+    if (!is.null(err_sla)) {
+      sprintf("<br><br><i>Error Rate SLA: %s %s%s</i>",
+              err_sla$operator, err_sla$threshold, err_sla$unit)
+    } else ""
+  )
+
+  # 3. Throughput Box
+  tps_val <- paste0(format(round(tps, 2), nsmall = 2), " /s")
+  tps_cap <- sprintf(
+    "<b>Throughput</b><br><br>Total Throughput: <b>%s /s</b><br>Failed Throughput: <b>%s /s</b>%s",
+    format(round(tps, 2), nsmall = 2),
+    format(round(fail_tps, 2), nsmall = 2),
+    # ── Append SLA threshold if defined ──
+    if (!is.null(tps_sla)) {
+      sprintf("<br><br><i>Total Throughput SLA: %s %s %s</i>",
+              tps_sla$operator, tps_sla$threshold, tps_sla$unit)
+    } else ""
+  )
+
+  sprintf(box_template,
+          run_id, users_val, users_cap, users_color,
+          run_id, tx_val,    tx_cap,    tx_color,
+          run_id, tps_val,   tps_cap,   tps_color)
+})
+
+  # Knit the consolidated string back into the R Markdown document
+  cat(knit(text = paste(src, collapse = "\n"), quiet = TRUE))
+} else {
+  htmltools::tags$div(style = "padding: 10px;", "No valid dashboard metrics available for consolidated display.")
+}
+```

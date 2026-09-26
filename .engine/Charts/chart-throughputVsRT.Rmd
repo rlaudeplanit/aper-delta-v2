@@ -1,0 +1,239 @@
+```{r chart_throughputVsRT, echo=FALSE, message=FALSE, warning=FALSE}
+source(here::here(".engine/Utilities", "utils.R"))
+library(plotly)
+library(dplyr)
+library(purrr)
+
+unique_files <- sort(unique(raw_data$app_name))
+
+# Global run colors — consistent across all charts
+unique_runs <- sort(unique(raw_data$run_id))
+set.seed(42)
+run_colors  <- setNames(choose_palette(length(unique_runs)), unique_runs)
+
+plots <- map(unique_files, function(f) {
+  file_data <- raw_data %>%
+    filter(app_name == f)
+
+  if (nrow(file_data) == 0) {
+    return(
+      htmltools::tags$div(
+        
+        htmltools::tags$div(
+          style = "width: 100%; border: 1px solid #e3e3e3; padding: 20px; color: #999; font-family: Consolas; font-size: 12px;",
+          paste0("No data available for: ", f)
+        )
+      )
+    )
+  }
+
+  subtitle_text <- build_run_testname_subtitle(
+    file_data %>% distinct(run_id, test_name)
+  )
+
+  # ============================================================
+  # 1. AGGREGATE PER MINUTE — TPS + avg RT + p90 RT
+  #    Offset each run to start at elapsed 0
+  # ============================================================
+  tpm_rt <- file_data %>%
+    mutate(
+      minute_mark = as.POSIXct(format(timestamp, "%Y-%m-%d %H:%M:00"), tz = "UTC")
+    ) %>%
+    group_by(run_id, minute_mark) %>%
+    summarise(
+      tps    = n(),
+      avg_rt = round(mean(elapsed, na.rm = TRUE), 0),
+      p90_rt = round(quantile(elapsed, 0.90, na.rm = TRUE), 0),
+      p95_rt = round(quantile(elapsed, 0.95, na.rm = TRUE), 0),
+      errors = sum(tolower(trimws(as.character(success))) %in% c("false", "no"), na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(error_rate = round((errors / tps) * 100, 1)) %>%
+    arrange(run_id, minute_mark) %>%
+    # ── Offset each run to start at 0 ──
+    group_by(run_id) %>%
+    mutate(
+      elapsed_seconds = as.numeric(difftime(minute_mark, min(minute_mark), units = "secs")),
+      elapsed_minutes = elapsed_seconds / 60,
+      time_label      = paste0(
+        floor(elapsed_minutes), "m ",
+        round((elapsed_minutes %% 1) * 60), "s"
+      )
+    ) %>%
+    ungroup()
+
+  if (nrow(tpm_rt) == 0) return(NULL)
+
+  dynamic_height <- 550
+  file_runs      <- sort(unique(tpm_rt$run_id))
+
+  # ============================================================
+  # 2. BUILD DUAL AXIS PLOTLY
+  #    Left Y  — Response Time (ms)
+  #    Right Y — Throughput (TPS)
+  # ============================================================
+  pl <- plot_ly(height = dynamic_height)
+
+  for (r in file_runs) {
+    run_data <- tpm_rt %>% filter(run_id == r)
+    col      <- run_colors[[as.character(r)]]
+
+    # ── Avg RT — solid line, left axis ──
+    pl <- pl %>%
+      add_trace(
+        data        = run_data,
+        x           = ~elapsed_minutes,
+        y           = ~avg_rt,
+        type        = "scatter",
+        mode        = "lines",
+        name        = paste0("Avg RT — Run ", r),
+        legendgroup = paste0("run_", r),
+        yaxis       = "y",
+        line        = list(color = col, width = 2, dash = "solid"),
+        text        = ~paste0(
+          "Run ID: ",      run_id,
+          "\nElapsed: ",   time_label,
+          "\nAvg RT: ",    avg_rt, " ms",
+          "\nP90 RT: ",    p90_rt, " ms",
+          "\nP95 RT: ",    p95_rt, " ms",
+          "\nTPS: ",       tps, " req/min",
+          "\nError Rate: ", error_rate, "%"
+        ),
+        hoverinfo   = "text"
+      )
+
+    # ── P90 RT — dashed line, left axis ──
+    pl <- pl %>%
+      add_trace(
+        data        = run_data,
+        x           = ~elapsed_minutes,
+        y           = ~p90_rt,
+        type        = "scatter",
+        mode        = "lines",
+        name        = paste0("P90 RT — Run ", r),
+        legendgroup = paste0("run_", r),
+        yaxis       = "y",
+        line        = list(color = col, width = 1.5, dash = "dash"),
+        text        = ~paste0(
+          "Run ID: ",   run_id,
+          "\nElapsed: ", time_label,
+          "\nP90 RT: ", p90_rt, " ms"
+        ),
+        hoverinfo   = "text"
+      )
+
+    # ── TPS — area chart, right axis ──
+    pl <- pl %>%
+      add_trace(
+        data        = run_data,
+        x           = ~elapsed_minutes,
+        y           = ~tps,
+        type        = "scatter",
+        mode        = "lines",
+        fill        = "tozeroy",
+        name        = paste0("TPS — Run ", r),
+        legendgroup = paste0("run_", r),
+        yaxis       = "y2",
+        line        = list(color = col, width = 1),
+        fillcolor   = paste0(
+          "rgba(",
+          paste(as.integer(col2rgb(col)), collapse = ","),
+          ",0.15)"
+        ),
+        text        = ~paste0(
+          "Run ID: ",    run_id,
+          "\nElapsed: ", time_label,
+          "\nTPS: ",     tps, " req/min"
+        ),
+        hoverinfo   = "text"
+      )
+  }
+
+  pl <- pl %>%
+    layout(
+      title = list(
+        text    = paste0(
+          "<b>Throughput vs Response Time: ", tools::file_path_sans_ext(f),
+          "<br><sup>", subtitle_text, "</sup></b>"
+        ),
+        x       = 0,
+        xanchor = "left",
+        font    = list(size = 14, family = "Consolas", color = "#333")
+      ),
+      xaxis = list(
+        title      = "Elapsed Time (minutes)",
+        fixedrange = TRUE,
+        automargin = TRUE,
+        tickangle  = -45,
+        ticksuffix = "m",
+        titlefont  = list(family = "Consolas", size = 12, color = "#333"),
+        tickfont   = list(family = "Consolas", size = 10)
+      ),
+      yaxis = list(
+        title      = "Response Time (ms)",
+        fixedrange = TRUE,
+        automargin = TRUE,
+        rangemode  = "tozero",
+        side       = "left",
+        titlefont  = list(family = "Consolas", size = 12, color = "#333"),
+        tickfont   = list(family = "Consolas", size = 10)
+      ),
+      yaxis2 = list(
+        title      = "Throughput (req/min)",
+        overlaying = "y",
+        side       = "right",
+        fixedrange = TRUE,
+        automargin = TRUE,
+        rangemode  = "tozero",
+        showgrid   = FALSE,
+        titlefont  = list(family = "Consolas", size = 12, color = "#333"),
+        tickfont   = list(family = "Consolas", size = 10)
+      ),
+      legend = list(
+        orientation = "h",
+        x           = 0,
+        y           = -0.25,
+        font        = list(family = "Consolas", size = 10)
+      ),
+      showlegend = TRUE,
+      margin     = list(l = 80, r = 80, b = 120, t = 80),
+      dragmode   = FALSE,
+      hoverlabel = list(bgcolor = "white"),
+      height     = dynamic_height,
+      hovermode  = "x unified"
+    ) %>%
+    plotly::config(
+      responsive     = TRUE,
+      displayModeBar = TRUE,
+      toImageButtonOptions = list(
+        format   = "png",
+        filename = paste0("Throughput_vs_RT_", tools::file_path_sans_ext(f), "_", Sys.Date()),
+        height   = dynamic_height,
+        width    = 1400
+      ),
+      modeBarButtonsToRemove = list(
+        "zoom2d", "pan2d", "select2d", "lasso2d", "zoomIn2d", "zoomOut2d",
+        "autoScale2d", "resetScale2d", "hoverClosestCartesian", "hoverCompareCartesian"
+      )
+    )
+
+  htmltools::tagList(
+    
+    htmltools::tags$div(
+      style = "width: 100%; overflow: hidden; border: 1px solid #e3e3e3; padding: 10px;",
+      pl
+    ),
+    render_observation_panel(
+      chart_id = paste0(
+        "chart_throughputVSRT_",
+        f
+      )
+    )
+  )
+})
+
+htmltools::tagList(
+  Filter(Negate(is.null), plots)
+)
+
+```

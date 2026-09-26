@@ -1,0 +1,404 @@
+```{r dash-application-health, echo=FALSE, results='asis'}
+library(dplyr)
+library(htmltools)
+
+# ============================================================
+# CURRENT RUN
+# ============================================================
+
+current_run_id <- raw_data %>%
+  distinct(run_id, sequence_num) %>%
+  arrange(desc(sequence_num)) %>%
+  slice(1) %>%
+  pull(run_id)
+
+# ============================================================
+# APPLICATION SUMMARY
+# ============================================================
+
+rt_summary <- get_run_rt_sla(current_run_id)
+
+app_summary <- raw_data %>%
+  filter(run_id == current_run_id) %>%
+  mutate(
+    is_pass = tolower(trimws(as.character(success))) %in%
+      c("true", "yes", "1")
+  ) %>%
+  group_by(app_name) %>%
+  summarise(
+
+    transactions = n(),
+
+    errors = sum(
+      !is_pass,
+      na.rm = TRUE
+    ),
+
+    error_rate = round(
+      errors /
+      transactions * 100,
+      2
+    ),
+
+    successful_transactions = sum(
+      is_pass,
+      na.rm = TRUE
+    ),
+
+    duration_secs = as.numeric(
+      difftime(
+        max(timestamp, na.rm = TRUE),
+        min(timestamp, na.rm = TRUE),
+        units = "secs"
+      )
+    ),
+
+    throughput = round(
+      successful_transactions /
+      duration_secs,
+      2
+    ),
+
+    p95 = round(
+      quantile(
+        elapsed,
+        0.95,
+        na.rm = TRUE
+      ),
+      0
+    ),
+
+    .groups = "drop"
+  )
+
+# ============================================================
+# JOURNEY SLA SUMMARY
+# ============================================================
+
+app_journey_summary <- NULL
+
+if (!is.null(rt_summary)) {
+
+  app_journey_summary <- rt_summary$all_labels %>%
+    left_join(
+      raw_data %>%
+        filter(run_id == current_run_id) %>%
+        distinct(
+          label,
+          thread_group,
+          app_name
+        ),
+      by = "label"
+    ) %>%
+    group_by(
+      app_name,
+      thread_group
+    ) %>%
+    summarise(
+      journey_passed = all(passed),
+      .groups = "drop"
+    ) %>%
+    group_by(app_name) %>%
+    summarise(
+
+      total_journeys = n(),
+
+      passed_journeys = sum(
+        journey_passed,
+        na.rm = TRUE
+      ),
+
+      failed_journeys = sum(
+        !journey_passed,
+        na.rm = TRUE
+      ),
+
+      .groups = "drop"
+    )
+
+}
+
+# ============================================================
+# APPLICATION TPS SLA
+# ============================================================
+
+app_tps_summary <- raw_data %>%
+  filter(
+    run_id == current_run_id
+  ) %>%
+  mutate(
+    is_pass = tolower(
+      trimws(as.character(success))
+    ) %in% c(
+      "true",
+      "yes",
+      "1"
+    )
+  ) %>%
+  group_by(app_name) %>%
+  summarise(
+
+    successful_transactions =
+      sum(is_pass),
+
+    duration_secs = as.numeric(
+      difftime(
+        max(timestamp),
+        min(timestamp),
+        units = "secs"
+      )
+    ),
+
+    throughput = round(
+      successful_transactions /
+      duration_secs,
+      2
+    ),
+
+    .groups = "drop"
+  ) %>%
+  rowwise() %>%
+  mutate(
+
+    throughput_target =
+      get_app_tps_threshold(app_name),
+
+    throughput_pass =
+      throughput >= throughput_target
+
+  ) %>%
+  ungroup()
+
+# ============================================================
+# FINAL DATASET
+# ============================================================
+
+app_health <- app_summary %>%
+  left_join(
+    app_journey_summary,
+    by = "app_name"
+  ) %>%
+  left_join(
+    app_tps_summary %>%
+      select(
+        app_name,
+        throughput_target,
+        throughput_pass
+      ),
+    by = "app_name"
+  ) %>%
+  mutate(
+
+    error_pass =
+      error_rate <= 15,
+
+    journey_pass =
+      failed_journeys == 0
+
+  )
+
+# ============================================================
+# STATUS + TOOLTIP
+# ============================================================
+
+metric_badge <- function(
+  value,
+  passed,
+  suffix = ""
+) {
+
+  sprintf(
+    "<span class='%s'>%s%s</span>",
+    ifelse(
+      passed,
+      "status-pass",
+      "status-fail"
+    ),
+    value,
+    suffix
+  )
+
+}
+
+app_health$status_html <- mapply(
+
+  function(
+    throughput_pass,
+    journey_pass,
+    throughput,
+    throughput_target,
+    failed_journeys,
+    total_journeys
+  ) {
+
+    failures <- c()
+
+    if (!throughput_pass) {
+
+      failures <- c(
+        failures,
+        sprintf(
+          "TPS %.2f below target %.2f",
+          throughput,
+          throughput_target
+        )
+      )
+
+    }
+
+    if (!journey_pass) {
+
+      failures <- c(
+        failures,
+        sprintf(
+          "%s of %s journeys failed",
+          failed_journeys,
+          total_journeys
+        )
+      )
+
+    }
+
+    tooltip <- paste(
+      failures,
+      collapse = "&#10;"
+    )
+
+    if (length(failures) == 0) {
+
+      return(
+        "<span class='status-pass'>PASS</span>"
+      )
+
+    }
+
+    sprintf(
+      "
+      <span class='status-fail'>
+        FAIL
+      </span>
+      <i class='fa fa-info-circle breach-tooltip'
+         title='%s'></i>
+      ",
+      tooltip
+    )
+
+  },
+
+  app_health$throughput_pass,
+  app_health$journey_pass,
+  app_health$throughput,
+  app_health$throughput_target,
+  app_health$failed_journeys,
+  app_health$total_journeys,
+
+  SIMPLIFY = TRUE
+
+)
+
+# ============================================================
+# HTML ROWS
+# ============================================================
+
+rows_html <- paste(
+  apply(
+    app_health,
+    1,
+    function(r) {
+
+      sprintf(
+        "
+        <tr>
+
+          <td>%s</td>
+
+          <td>%s</td>
+
+          <td class='numeric-cell'>%s</td>
+
+          <td class='numeric-cell'>%s</td>
+
+          <td class='numeric-cell'>%s</td>
+
+          <td class='numeric-cell'>%s/%s</td>
+
+        </tr>
+        ",
+
+        r["app_name"],
+
+        r["status_html"],
+
+        metric_badge(
+          sprintf(
+            "%.2f",
+            as.numeric(r["throughput"])
+          ),
+          as.logical(
+            r["throughput_pass"]
+          )
+        ),
+
+        metric_badge(
+          sprintf(
+            "%sms",
+            round(
+              as.numeric(r["p95"])
+            )
+          ),
+          as.numeric(
+            r["failed_journeys"]
+          ) == 0
+        ),
+
+        metric_badge(
+          sprintf(
+            "%.2f",
+            as.numeric(r["error_rate"])
+          ),
+          as.numeric(
+            r["error_rate"]
+          ) <= 15,
+          "%"
+        ),
+
+        r["passed_journeys"],
+        r["total_journeys"]
+
+      )
+
+    }
+  ),
+  collapse = ""
+)
+
+html_output <- sprintf(
+'
+<div class="executive-summary">
+
+<h3 class="scorecard-header">
+Application Health Summary
+</h3>
+
+<table class="scorecard-table">
+
+<tr>
+  <th>Application</th>
+  <th>Status</th>
+  <th class="numeric-header">TPS</th>
+  <th class="numeric-header">P95</th>
+  <th class="numeric-header">Errors</th>
+  <th class="numeric-header">Journeys</th>
+</tr>
+
+%s
+
+</table>
+
+</div>
+',
+rows_html
+)
+
+HTML(html_output)
+```

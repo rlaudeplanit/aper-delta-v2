@@ -1,0 +1,135 @@
+```{r chart_vUsersPerMinute, echo=FALSE, message=FALSE, warning=FALSE}
+source(here::here(".engine/Utilities", "utils.R"))
+library(plotly)
+library(dplyr)
+library(ggplot2)
+
+# ============================================================
+# 1. AGGREGATE PER MINUTE — max userIndex reached so far, per run_id
+# ============================================================
+vusers_data <- raw_data %>%
+  filter(!is.na(user_index)) %>%
+  mutate(
+    minute_mark = as.POSIXct(format(timestamp, "%Y-%m-%d %H:%M:00"), tz = "UTC")
+  ) %>%
+  group_by(run_id, minute_mark) %>%
+  summarise(max_user_this_minute = max(user_index, na.rm = TRUE), .groups = "drop") %>%
+  arrange(run_id, minute_mark) %>%
+  group_by(run_id) %>%
+  mutate(
+    active_users = cummax(max_user_this_minute) + 1   # +1 since user_index is typically 0-based
+  ) %>%
+  ungroup()
+
+subtitle_text <- build_run_testname_subtitle(
+  raw_data %>% distinct(run_id, test_name)
+)
+
+# ============================================================
+# 2. DYNAMIC HEIGHT
+# ============================================================
+dynamic_height <- 550
+
+# ============================================================
+# 3. BUILD GGPLOT — vertical bars, faceted by run_id
+# ============================================================
+p <- ggplot(
+  vusers_data,
+  aes(
+    x    = minute_mark,
+    y    = active_users,
+    text = paste0(
+      "Run ID: ",          run_id,
+      "\nTime: ",          format(minute_mark, "%H:%M"),
+      "\nActive Users: ",  active_users
+    )
+  )
+) +
+  geom_bar(
+    stat  = "identity",
+    width = 45,
+    fill  = "#ED79F9",
+    color = "#222222",
+    linewidth = 0.1
+  ) +
+  labs(
+    x = "Timeline (Minute Intervals)",
+    y = "Active Virtual Users"
+  ) +
+  facet_wrap(~run_id, scales = "free_x", nrow = 1) +
+  theme_minimal() +
+  theme(
+    plot.title      = element_blank(),
+    legend.position = "none",
+    panel.spacing   = unit(2, "lines"),
+    axis.text.x     = element_text(angle = 45, hjust = 1, family = "Consolas", size = 10),
+    axis.text.y     = element_text(family = "Consolas", size = 10),
+    axis.title.x    = element_text(family = "Consolas", size = 12, color = "#333", margin = margin(t = 10)),
+    axis.title.y    = element_text(family = "Consolas", size = 12, color = "#333", margin = margin(r = 20)),
+    strip.text      = element_text(family = "Consolas", size = 11, color = "#333", face = "bold")
+  )
+
+# ============================================================
+# 4. CONVERT TO PLOTLY
+# ============================================================
+pl <- ggplotly(p, tooltip = "text", height = dynamic_height)
+
+# ============================================================
+# 5. LAYOUT CONFIG
+# ============================================================
+layout_config <- list(
+  showlegend = FALSE,
+  margin     = list(l = 100, r = 40, b = 80, t = 80),
+  dragmode   = FALSE,
+  hoverlabel = list(bgcolor = "white"),
+  height     = dynamic_height,
+  width      = NULL,
+  title      = list(
+    text    = "<b>Virtual Users per Minute</b>",
+    x       = 0,
+    xanchor = "left",
+    font    = list(size = 14, family = "Consolas", color = "#333")
+  )
+)
+
+for (i in 1:10) {
+  x_name <- if (i == 1) "xaxis" else paste0("xaxis", i)
+  y_name <- if (i == 1) "yaxis" else paste0("yaxis", i)
+
+  if (i == 1) {
+    layout_config[[x_name]]$fixedrange <- TRUE
+    layout_config[[y_name]]$fixedrange <- TRUE
+    layout_config[[y_name]]$automargin <- TRUE
+  } else {
+    layout_config[[x_name]] <- list(fixedrange = TRUE)
+    layout_config[[y_name]] <- list(fixedrange = TRUE)
+  }
+}
+
+pl <- do.call(layout, c(list(pl), layout_config)) %>%
+  config(
+    responsive     = TRUE,
+    displayModeBar = TRUE,
+    toImageButtonOptions = list(
+      format   = "png",
+      filename = paste0("VirtualUsers_Per_Minute_Overall_", Sys.Date()),
+      height   = dynamic_height,
+      width    = 1400
+    ),
+    modeBarButtonsToRemove = list(
+      "zoom2d", "pan2d", "select2d", "lasso2d", "zoomIn2d", "zoomOut2d",
+      "autoScale2d", "resetScale2d", "hoverClosestCartesian", "hoverCompareCartesian"
+    )
+  )
+
+htmltools::tagList(
+  
+  htmltools::tags$div(
+    style = "width: 100%; overflow: hidden; border: 1px solid #e3e3e3; padding: 10px;",
+    pl
+  ),
+  render_observation_panel(
+    chart_id = "chart_vUserPerMinute"
+  )
+)
+```

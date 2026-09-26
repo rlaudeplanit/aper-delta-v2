@@ -1,0 +1,290 @@
+```{r tab_slowest, echo=FALSE, warning=FALSE, message=FALSE}
+library(DT)
+library(dplyr)
+library(jsonlite)
+library(htmltools)
+
+header_font_size <- "12px"
+data_font_size   <- "11px"
+
+unique_tests_vector <- sort(unique(prepped_logs$Application))
+
+# Explicitly sort Run IDs in ascending chronological order (oldest first, newest last)
+if (exists("unique_runs_vector") && !is.null(unique_runs_vector)) {
+  unique_runs_vector <- sort(unique(unique_runs_vector), decreasing = FALSE)
+} else {
+  unique_runs_vector <- sort(unique(prepped_logs$run_id), decreasing = FALSE)
+}
+
+# Distinct colour palette mapped chronologically (1st colour = oldest run)
+palette    <- c("#007bff", "#28a745", "#dc3545", "#fd7e14", "#6f42c1", "#20c997", "#e83e8c", "#17a2b8")
+run_colors <- setNames(rep_len(palette, length(unique_runs_vector)), unique_runs_vector)
+
+run_colors_json <- jsonlite::toJSON(as.list(run_colors), auto_unbox = TRUE)
+run_names_json  <- jsonlite::toJSON(unique_runs_vector, auto_unbox = FALSE)
+
+# Safely rename columns using any_of to handle optional fields
+prepped_logs_display <- prepped_logs %>%
+  rename(any_of(c(
+    `Application`   = "Application",
+    `Run ID`        = "run_id",
+    `User Journey` = "thread_group",
+    `Label`         = "label",
+    `Response Code` = "Response Code",
+    `Timestamp`     = "timestamp"
+  )))
+
+# ============================================================
+# BUILD HTML LEGEND BANNER FOR RUN IDs (CHRONOLOGICAL)
+# ============================================================
+legend_html <- htmltools::tags$div(
+  style = "background-color: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 4px; padding: 8px 12px; margin-bottom: 12px; font-size: 12px; color: #333333;",
+  htmltools::tags$strong("Run Legend: ", style = "color: #555555; margin-right: 12px;"),
+  lapply(seq_along(unique_runs_vector), function(i) {
+    r_name  <- unique_runs_vector[i]
+    r_color <- run_colors[[r_name]]
+    htmltools::tags$span(
+      style = "display: inline-block; margin-right: 18px;",
+      htmltools::tags$span(
+        style = sprintf("background-color: %s; color: #ffffff; padding: 3px 8px; border-radius: 4px; font-size: 10px; font-weight: bold; margin-right: 6px;", r_color),
+        paste0("Run ", i)
+      ),
+      r_name
+    )
+  })
+)
+
+dt_widget <- datatable(
+  prepped_logs_display,
+  class      = 'display compact nowrap',
+  filter  = "none",
+  options = list(
+    pageLength     = 10,
+    searching      = TRUE,
+    dom            = 'lrtip',
+    order          = list(list(4, 'desc')),
+    scrollX        = TRUE,
+    scrollY        = "500px",
+    scrollCollapse = TRUE,
+    autoWidth      = FALSE,
+    columnDefs     = list(
+      list(className = 'dt-left',   targets = 0),
+      list(className = 'dt-center', targets = 1),
+      list(className = 'dt-left',   targets = c(2, 3, 5)),
+      list(className = 'dt-right',  targets = 4),
+      list(className = 'dt-center', targets = 6)
+    ),
+    initComplete = JS(paste0("function(settings, json) {
+      var tableApi = this.api();
+      var tableId  = $(tableApi.table().node()).attr('id');
+
+      $('head').append('<style>' +
+        '#' + tableId + '_wrapper .dataTables_scrollHead { overflow: visible !important; }' +
+        '#' + tableId + '_wrapper .dataTables_scrollBody { overflow: visible !important; }' +
+        '#' + tableId + '_wrapper .dataTables_scroll { overflow: visible !important; }' +
+        '.ms-btn { color: #333333 !important; background-color: #ffffff !important; border: 1px solid #ccc !important; }' +
+        '.custom-ms-menu, .custom-ms-menu * { color: #333333 !important; }' +
+        '.custom-ms-menu { background-color: #ffffff !important; }' +
+        '.custom-ms-search { color: #333333 !important; background-color: #ffffff !important; border: 1px solid #ccc !important; }' +
+      '</style>');
+
+      // 1. Hide global search bar
+      $(tableApi.table().container()).find('.dataTables_filter').hide();
+
+      // 2. Align headers
+      var headings = $(tableApi.table().header()).find('tr:first th');
+      headings.eq(0).css({'text-align': 'left',   'font-size': '", header_font_size, "'});
+      headings.eq(1).css({'text-align': 'center', 'font-size': '", header_font_size, "'});
+      headings.eq(2).css({'text-align': 'left',   'font-size': '", header_font_size, "'});
+      headings.eq(3).css({'text-align': 'left',   'font-size': '", header_font_size, "'});
+      headings.eq(4).css({'text-align': 'right',  'font-size': '", header_font_size, "'});
+      headings.eq(5).css({'text-align': 'left',   'font-size': '", header_font_size, "'});
+      headings.eq(6).css({'text-align': 'center', 'font-size': '", header_font_size, "'});
+
+      // 3. Extract unique values
+      var tests      = ", jsonlite::toJSON(unique_tests_vector), ";
+      var runs       = ", jsonlite::toJSON(unique_runs_vector), ";
+      var defaultRun = '", most_recent_run, "';
+      var scenarios  = [];
+      var labels     = [];
+
+      tableApi.column(2).data().unique().sort().each(function(d) { if (d) scenarios.push(d); });
+      tableApi.column(3).data().unique().sort().each(function(d) { if (d) labels.push(d); });
+
+      // 4. Build custom filter row
+      var filterRowHtml = '<tr class=\"custom-filter-row\">';
+      filterRowHtml += '<td id=\"td-test-'     + tableId + '\"></td>';
+      filterRowHtml += '<td id=\"td-run-'      + tableId + '\"></td>';
+      filterRowHtml += '<td id=\"td-scenario-' + tableId + '\"></td>';
+      filterRowHtml += '<td id=\"td-label-'    + tableId + '\"></td>';
+      filterRowHtml += '<td><input type=\"text\" class=\"form-control input-sm txt-col-filter\" data-index=\"4\" placeholder=\"Filter...\" style=\"width:100%; font-size:11px; height:28px; padding:2px 5px;\"></td>';
+      filterRowHtml += '<td><input type=\"text\" class=\"form-control input-sm txt-col-filter\" data-index=\"5\" placeholder=\"Filter...\" style=\"width:100%; font-size:11px; height:28px; padding:2px 5px;\"></td>';
+      filterRowHtml += '<td id=\"td-success-'  + tableId + '\"></td>';
+      filterRowHtml += '</tr>';
+      $(tableApi.table().header()).append(filterRowHtml);
+
+      // 5. Body-Appended Custom Dropdown Builder
+      function makeCustomDropdown(tdId, items, col, isMulti, defaultVal) {
+        var $cell = $('#' + tdId);
+        $cell.empty();
+
+        var initialText = isMulti ? 'All' : (defaultVal ? defaultVal : 'All');
+        var $btn = $('<button type=\"button\" class=\"btn btn-default btn-sm ms-btn\" style=\"width:100%; text-align:left; font-size:11px; height:28px; padding:2px 8px; overflow:hidden; text-overflow:ellipsis; display:flex; justify-content:space-between; align-items:center;\"><span>' + initialText + '</span> <span class=\"caret\"></span></button>').appendTo($cell);
+        
+        var $menu = $('<div class=\"custom-ms-menu\" style=\"display:none; position:absolute; min-width:180px; max-height:250px; border:1px solid #ccc; box-shadow:0 4px 12px rgba(0,0,0,0.15); z-index:999999; padding:6px; font-family:inherit;\"></div>');
+        var $search = $('<input type=\"text\" class=\"custom-ms-search\" placeholder=\"Search...\" style=\"font-size:11px; height:26px; padding:2px 6px; margin-bottom:6px; width:100%; box-sizing:border-box; border-radius:3px;\">').appendTo($menu);
+        var $optList = $('<div class=\"ms-opt-list\" style=\"max-height:150px; overflow-y:auto;\"></div>');
+
+        if (isMulti) {
+          var $selectAll = $('<div style=\"padding:4px 6px; border-bottom:1px solid #eee; margin-bottom:4px;\"><label style=\"margin:0; font-weight:bold; cursor:pointer; font-size:11px; color:#333 !important;\"><input type=\"checkbox\" class=\"ms-select-all\" checked style=\"margin-right:6px;\"> Select All</label></div>').appendTo($menu);
+          $optList.appendTo($menu);
+
+          items.forEach(function(item) {
+            var escapedVal = $.fn.dataTable.util.escapeRegex(item);
+            $optList.append('<div class=\"ms-opt-item\" style=\"padding:2px 6px;\"><label style=\"margin:0; font-weight:normal; font-size:11px; cursor:pointer; display:flex; align-items:center; color:#333 !important;\"><input type=\"checkbox\" class=\"ms-opt\" value=\"' + escapedVal + '\" checked style=\"margin-right:6px;\"> ' + item + '</label></div>');
+          });
+
+          function updateMultiFilter() {
+            var $opts    = $optList.find('.ms-opt');
+            var $checked = $opts.filter(':checked');
+            var total    = $opts.length;
+            var count    = $checked.length;
+
+            $selectAll.find('.ms-select-all').prop('checked', count === total);
+
+            if (count === total) {
+              $btn.find('span:first').text('All');
+              col.search('', true, false).draw();
+            } else if (count === 0) {
+              $btn.find('span:first').text('None selected');
+              col.search('^$', true, false).draw();
+            } else {
+              $btn.find('span:first').text(count + ' selected');
+              var vals = [];
+              $checked.each(function() { vals.push($(this).val()); });
+              var regex = '^(' + vals.join('|') + ')$';
+              col.search(regex, true, false).draw();
+            }
+          }
+
+          $selectAll.find('.ms-select-all').on('change', function() {
+            var isChecked = $(this).prop('checked');
+            $optList.find('.ms-opt').prop('checked', isChecked);
+            updateMultiFilter();
+          });
+
+          $optList.on('change', '.ms-opt', function() {
+            updateMultiFilter();
+          });
+        } else {
+          $optList.appendTo($menu);
+          $optList.append('<div class=\"ms-opt-item\" style=\"padding:2px 6px;\"><label style=\"margin:0; font-weight:normal; font-size:11px; cursor:pointer; display:flex; align-items:center; color:#333 !important;\"><input type=\"radio\" name=\"ss-' + tdId + '\" class=\"ss-opt\" value=\"\" ' + (!defaultVal ? 'checked' : '') + ' style=\"margin-right:6px;\"> All</label></div>');
+
+          items.forEach(function(item) {
+            var escapedVal = $.fn.dataTable.util.escapeRegex(item);
+            var isChecked = (defaultVal && item === defaultVal) ? 'checked' : '';
+            $optList.append('<div class=\"ms-opt-item\" style=\"padding:2px 6px;\"><label style=\"margin:0; font-weight:normal; font-size:11px; cursor:pointer; display:flex; align-items:center; color:#333 !important;\"><input type=\"radio\" name=\"ss-' + tdId + '\" class=\"ss-opt\" value=\"' + escapedVal + '\" ' + isChecked + ' style=\"margin-right:6px;\"> ' + item + '</label></div>');
+          });
+
+          $optList.on('change', '.ss-opt', function() {
+            var val = $(this).val();
+            var rawVal = $(this).parent().text().trim();
+            $btn.find('span:first').text(val === '' ? 'All' : rawVal);
+            col.search(val ? '^' + val + '$' : '', true, false).draw();
+            $menu.hide();
+          });
+
+          if (defaultVal) {
+            col.search('^' + $.fn.dataTable.util.escapeRegex(defaultVal) + '$', true, false).draw();
+          }
+        }
+
+        $('body').append($menu);
+
+        $btn.on('click', function(e) {
+          e.stopPropagation();
+          var isVisible = $menu.is(':visible');
+          $('.custom-ms-menu').hide();
+
+          if (!isVisible) {
+            var offset = $btn.offset();
+            $menu.css({
+              top: offset.top + $btn.outerHeight() + 2,
+              left: offset.left,
+              width: Math.max(180, $btn.outerWidth())
+            }).show();
+            $search.val('').trigger('keyup').focus();
+          }
+        });
+
+        $menu.on('click', function(e) { e.stopPropagation(); });
+
+        $search.on('keyup', function() {
+          var term = $(this).val().toLowerCase();
+          $optList.find('.ms-opt-item').each(function() {
+            var txt = $(this).text().toLowerCase();
+            $(this).toggle(txt.indexOf(term) > -1);
+          });
+        });
+      }
+
+      // 6. Initialise Dropdowns
+      makeCustomDropdown('td-test-'     + tableId, tests,     tableApi.column(0), true,  null);
+      makeCustomDropdown('td-run-'      + tableId, runs,      tableApi.column(1), false, defaultRun);
+      makeCustomDropdown('td-scenario-' + tableId, scenarios, tableApi.column(2), true,  null);
+      makeCustomDropdown('td-label-'    + tableId, labels,    tableApi.column(3), true,  null);
+      makeCustomDropdown('td-success-'  + tableId, ['TRUE', 'FALSE'], tableApi.column(6), false, null);
+
+      // Close open menus when clicking outside
+      $(document).off('click.slowMs').on('click.slowMs', function(e) {
+        if (!$(e.target).closest('.custom-ms-menu, .ms-btn').length) {
+          $('.custom-ms-menu').hide();
+        }
+      });
+
+      // 7. Text input handlers — cols 4 and 5
+      $(tableApi.table().header()).on('keyup change', '.txt-col-filter', function() {
+        var idx = $(this).data('index');
+        tableApi.column(idx).search(this.value).draw();
+      });
+
+    }")),
+    drawCallback = JS(
+      sprintf("function(settings) {
+        var tableApi  = this.api();
+        var runColors = %s;
+
+        $(tableApi.table().body()).find('td').css('font-size', '%s');
+
+        // Apply badge pill styling with matching background colour to Run ID cells (Column 1)
+        tableApi.column(1, { page: 'current' }).nodes().each(function(cell) {
+          var val = $(cell).text().trim();
+          if (val && runColors[val]) {
+            $(cell).html('<span style=\"background-color:' + runColors[val] + '; color:#ffffff; padding:3px 8px; border-radius:4px; font-size:10px; font-weight:bold; display:inline-block;\">' + val + '</span>');
+          }
+        });
+
+        // Apply green badge pill for TRUE and red badge pill for FALSE in Success column (Column 6)
+        tableApi.column(6, { page: 'current' }).nodes().each(function(cell) {
+          var val = $(cell).text().trim().toUpperCase();
+          if (val === 'TRUE') {
+            $(cell).html('<span style=\"background-color:#28a745; color:#ffffff; padding:3px 8px; border-radius:4px; font-size:10px; font-weight:bold; display:inline-block;\">TRUE</span>');
+          } else if (val === 'FALSE') {
+            $(cell).html('<span style=\"background-color:#dc3545; color:#ffffff; padding:3px 8px; border-radius:4px; font-size:10px; font-weight:bold; display:inline-block;\">FALSE</span>');
+          }
+        });
+
+        tableApi.columns.adjust();
+      }", run_colors_json, data_font_size)
+    )
+  ),
+  rownames = FALSE,
+  width    = "100%"
+)
+
+# Render Legend Banner and Datatable
+htmltools::tagList(
+  legend_html,
+  dt_widget
+)
+```

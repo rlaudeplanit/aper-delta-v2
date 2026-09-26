@@ -1,0 +1,118 @@
+```{r dash-rt-sla, results='asis', echo=FALSE, warning=FALSE, message=FALSE}
+library(flexdashboard)
+library(purrr)
+library(dplyr)
+library(knitr)
+source(here::here(".engine/Utilities", "utils.R"))
+
+if (!exists("planitDarkGrey")) planitDarkGrey <- "darkgrey"
+
+# ── Get sequence_num per run to identify current and sort correctly ──
+run_order <- raw_data %>%
+  group_by(run_id) %>%
+  summarise(sequence_num = first(sequence_num), .groups = "drop") %>%
+  arrange(desc(sequence_num))   # current run (highest seq) first
+
+current_run_id    <- run_order$run_id[1]
+run_ids_in_report <- run_order$run_id   # ordered: current first, older after
+
+ticks <- "```"
+box_template <- paste0(
+  "### %s Response Time\n\n",
+  ticks, "{r, echo=FALSE}\n",
+  "flexdashboard::valueBox(\n",
+  "  value   = '%s',\n",
+  "  caption = HTML('%s'),\n",
+  "  icon    = '%s',\n",
+  "  color   = '%s'\n",
+  ")\n",
+  ticks, "\n"
+)
+
+src <- map_chr(run_ids_in_report, function(rid) {
+
+  is_current <- (rid == current_run_id)
+  rt_result  <- get_run_rt_sla(rid)
+
+  if (is.null(rt_result)) {
+    value_text   <- "N/A"
+    caption_text <- "<b>Response Time</b><br><br>No response time SLA defined."
+    box_color    <- planitDarkGrey
+    box_icon     <- if (is_current) "fa-stopwatch" else "fa-history"
+
+  } else {
+
+    # ── Evaluate SLA at Thread Group (User Journey) Level ──
+    run_journeys <- raw_data %>% filter(run_id == rid)
+
+    breached_labels <- if (!is.null(rt_result$top_breaches) && nrow(rt_result$top_breaches) > 0) {
+      rt_result$top_breaches$label
+    } else {
+      character(0)
+    }
+
+    # Summarise pass/fail per Thread Group using raw_data$thread_group
+    journey_summary <- run_journeys %>%
+      group_by(thread_group) %>%
+      summarise(
+        has_breach = any(label %in% breached_labels),
+        .groups = "drop"
+      )
+
+    total_journeys  <- nrow(journey_summary)
+    failed_journeys <- sum(journey_summary$has_breach)
+    passed_journeys <- total_journeys - failed_journeys
+
+    # value_text <- sprintf("%d / %d user journeys failed", failed_journeys, total_journeys)
+    value_text <- sprintf("%d / %d user journeys passed", passed_journeys, total_journeys)
+
+    # ── SLA color only for current run ──
+    box_color <- if (!is_current) {
+      planitDarkGrey
+    } else if (failed_journeys == 0) {
+      "success"
+    } else {
+      "danger"
+    }
+
+    # ── Icon — history for older runs, status for current ──
+    box_icon <- if (!is_current) {
+      "fa-stopwatch"
+    } else if (failed_journeys == 0) {
+      "fa-check-circle"
+    } else {
+      "fa-times-circle"
+    }
+
+    if (nrow(rt_result$top_breaches) > 0) {
+      breach_lines <- rt_result$top_breaches %>%
+        mutate(
+          line = sprintf(
+            "%s &mdash; %s%% over (%dms vs %dms SLA)",
+            label, breach_pct, actual_rt, threshold
+          )
+        ) %>%
+        pull(line)
+
+      breach_html <- paste(
+        sprintf("%d. %s", seq_along(breach_lines), breach_lines),
+        collapse = "<br>"
+      )
+
+      caption_text <- sprintf(
+        "<b>%s Response Time</b><br><br>Worst transaction breaches (%s vs SLA):<br>%s",
+        toupper(rt_result$metric), toupper(rt_result$metric), breach_html
+      )
+    } else {
+      caption_text <- sprintf(
+        "<b>%s Response Time</b><br><br>All %d user journeys transactions passed SLA.",
+        toupper(rt_result$metric), total_journeys
+      )
+    }
+  }
+
+  sprintf(box_template, rid, value_text, caption_text, box_icon, box_color)
+})
+
+cat(knit(text = paste(src, collapse = "\n"), quiet = TRUE))
+```

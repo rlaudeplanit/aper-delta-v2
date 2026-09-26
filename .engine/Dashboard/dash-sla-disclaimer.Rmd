@@ -1,0 +1,32 @@
+```{r dash-sla-disclaimer, echo=FALSE, results='asis'}
+library(htmltools)
+
+# Only show the disclaimer if SLA was actually evaluated (no point showing it if no SLA exists at all)
+has_any_sla <- (length(sla_results) > 0) || (length(rt_sla_results) > 0)
+
+if (has_any_sla) {
+
+  htmltools::tags$div(
+    style = paste0(
+      "background-color: #1e1e1e; ",
+      "color: #FF6432; ",
+      "border-left: 4px solid #FF6432; ",
+      "border-radius: 4px; ",
+      "padding: 12px 18px; ",
+      "margin: 10px 0; ",
+      "font-family: Consolas, monospace; ",
+      "font-size: 12px; ",
+      "line-height: 1.6;"
+    ),
+    htmltools::tags$span(style = "font-weight: bold;", "⚠ Note: "),
+    "This SLA evaluation covers client-side metrics only (response time, error rate, ",
+    "throughput, and virtual users). Server-side infrastructure metrics — CPU, memory, ",
+    "and other resource utilisation — are not currently captured by this tool and ",
+    "have not been verified against any threshold. A full performance sign-off should ",
+    "include separate confirmation of server-side health from infrastructure monitoring."
+  )
+
+} else {
+  htmltools::tags$div(style = "display: none;")
+}
+```

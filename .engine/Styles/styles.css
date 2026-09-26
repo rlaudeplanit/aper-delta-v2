@@ -1,0 +1,376 @@
+/* ============================================================
+   COLOURS
+============================================================ */
+
+.planitWhite      { color: #FFFFFF; }
+.planitLightGrey  { color: #E5E7EB; }
+.planitGrey       { color: #6B7280; }
+.planitDarkGrey   { color: #4B5563; }
+.planitBlack      { color: #111827; }
+
+.planitBlue       { color: #2563EB; }
+.planitOrange     { color: #F97316; }
+.planitPurple     { color: #7C3AED; }
+
+.passedGreen      { color: #198754; }
+.failedRed        { color: #DC3545; }
+
+.backgroundBlack  { background-color: #000000; }
+.backgroundWhite  { background-color: #FFFFFF; }
+
+
+/* ============================================================
+   PAGE
+============================================================ */
+
+body {
+  background-color: #F8F9FA;
+  font-family: Arial, sans-serif;
+  color: #111827;
+}
+
+.dashboard-page-wrapper,
+.dashboard-content,
+.section.level1 {
+  color: inherit;
+}
+
+
+/* ============================================================
+   NAVIGATION BAR
+============================================================ */
+
+.navbar {
+  color: #FFFFFF !important;
+  background: linear-gradient(
+    to right,
+    #111827 0%,
+    #374151 100%
+  );
+  border: none;
+  padding: 5px 10px;
+  min-width: 1400px;
+}
+
+.navbar-brand {
+  color: #FFFFFF !important;
+  font-weight: bold;
+}
+
+.navbar .navbar-nav > li.active > a,
+.navbar .navbar-nav > li > a:focus,
+.navbar .navbar-nav > li > a[aria-selected="true"] {
+  background-color: #4B5563 !important;
+  color: #FFFFFF !important;
+}
+
+
+/* ============================================================
+   SECTION HEADERS
+============================================================ */
+
+.section.level2 h2,
+.section.level3 h3 {
+  background: #E5E7EB;
+  color: #111827;
+  border-left: 6px solid #2563EB;
+  padding: 10px 14px;
+  border-radius: 4px;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+
+/* ============================================================
+   EXECUTIVE SUMMARY
+============================================================ */
+
+.executive-summary {
+  background: #FFFFFF;
+  color: #111827;
+  border-left: 6px solid #198754;
+  border-radius: 8px;
+  padding: 18px 22px;
+  margin-bottom: 15px;
+  box-shadow: 0 1px 4px rgba(0,0,0,.10);
+}
+
+.executive-summary.fail {
+  border-left-color: #DC3545;
+}
+
+.executive-summary h2 {
+  margin-top: 0;
+  margin-bottom: 12px;
+  font-size: 28px;
+}
+
+
+/* ============================================================
+   SCORECARD TABLES
+============================================================ */
+
+.scorecard-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.scorecard-table th {
+  background-color: #374151;
+  color: white;
+  padding: 10px;
+}
+
+.scorecard-table td {
+  padding: 10px;
+  border-bottom: 1px solid #E5E7EB;
+}
+
+.scorecard-table tr:hover {
+  background-color: #F3F4F6;
+}
+
+
+/* ============================================================
+   APPLICATION HEALTH / SLA TABLES
+============================================================ */
+
+.health-pass {
+  color: #198754;
+  font-weight: bold;
+}
+
+.health-fail {
+  color: #DC3545;
+  font-weight: bold;
+}
+
+.health-warning {
+  color: #FFC107;
+  font-weight: bold;
+}
+
+/* ============================================================
+   VALUE BOXES
+   Keep only for KPI metrics
+============================================================ */
+
+.value-box {
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,.08);
+  box-shadow: 0 1px 4px rgba(0,0,0,.15);
+}
+
+.value-box .inner p.value {
+  font-size: clamp(20px, 3vw, 38px) !important;
+}
+
+.value-box .inner p.caption {
+  font-size: clamp(10px, 1.2vw, 15px) !important;
+}
+
+.value,
+.caption {
+  color: #FDF7F7 !important;
+}
+
+
+/* ============================================================
+   EXISTING DASHBOARD SECTIONS
+============================================================ */
+
+#test-info p.value,
+#metric p.value,
+#sla p.value {
+  font-size: 30px !important;
+}
+
+#test-info p.caption,
+#metric p.caption,
+#sla p.caption {
+  display: none;
+}
+
+
+/* ============================================================
+   DATATABLES
+============================================================ */
+
+.dataTables_scrollHead {
+  background-color: #374151;
+  color: #FFFFFF !important;
+}
+
+.dataTables_wrapper {
+  padding-bottom: 25px !important;
+  margin-bottom: 10px !important;
+}
+
+.dataTables_paginate {
+  padding-top: 8px !important;
+  padding-bottom: 8px !important;
+}
+
+table.dataTable thead th {
+  background-color: #374151;
+  color: white;
+}
+
+table.dataTable tbody tr:hover {
+  background-color: #F3F4F6 !important;
+}
+
+
+/* ============================================================
+   SCROLLING
+============================================================ */
+
+.scrollable-tabset-row .chart-stage {
+  overflow-y: auto !important;
+  max-height: calc(100vh - 160px) !important;
+}
+
+.scrollable-tabset-row .chart-stage > div {
+  height: auto !important;
+}
+
+.chart-stage {
+  overflow-y: auto !important;
+}
+
+
+/* ============================================================
+   MARK / HIGHLIGHT TAGS
+============================================================ */
+
+mark {
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-weight: bold;
+}
+
+mark.sla-pass {
+  background-color: #198754;
+  color: #FFFFFF;
+}
+
+mark.sla-fail {
+  background-color: #DC3545;
+  color: #FFFFFF;
+}
+
+mark.sla-generic {
+  background-color: #FFC107;
+  color: #111827;
+}
+
+
+/* ============================================================
+   CODE BLOCKS
+============================================================ */
+
+code,
+pre {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* ============================================================
+   STATUS
+============================================================ */
+
+.status-pass {
+  background-color: #D1FAE5;
+  color: #065F46;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 5px;
+  display: inline-block;
+  text-align: center;
+  min-width: 55px;
+}
+
+.status-fail {
+  background-color: #FEE2E2;
+  color: #991B1B; 
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 5px;
+  display: inline-block;
+  text-align: center;
+  min-width: 55px;
+}
+
+.status-na {
+  background-color: #E5E7EB;
+  color: #4B5563;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 5px;
+  display: inline-block;
+  text-align: center;
+  min-width: 55px;
+}
+
+.executive-subtext {
+  padding-left: 20px;
+  padding-bottom: 8px;
+  font-size: 12px;
+  color: #6B7280;
+}
+
+.failure-drivers {
+  margin-top: 10px;
+}
+
+.failure-drivers ul {
+  margin-top: 5px;
+  margin-bottom: 0;
+}
+
+/* ============================================================
+   SCORECARD
+============================================================ */
+
+.scorecard-header {
+  font-size: 22px;
+  font-weight: 700;
+  color: #111827;
+  margin-bottom: 10px;
+}
+
+.status-pass {
+  color: #198754;
+  font-weight: 700;
+}
+
+.status-fail {
+  color: #DC3545;
+  font-weight: 700;
+}
+
+.status-na {
+  color: #6B7280;
+  font-weight: 700;
+}
+
+.executive-subtext {
+  padding-left: 20px;
+  padding-bottom: 8px;
+  font-size: 12px;
+  color: #6B7280;
+}
+
+/* ============================================================
+   TABLE CELLS
+============================================================ */
+
+.numeric-cell {
+  text-align: right;
+  padding-right: 12px;
+}
+
+.breach-tooltip {
+  margin-left: 6px;
+  color: #6C757D;
+  cursor: help;
+}

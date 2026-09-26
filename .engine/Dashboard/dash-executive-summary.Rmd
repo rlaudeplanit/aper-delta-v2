@@ -1,0 +1,470 @@
+```{r dash-executive-summary, echo=FALSE, results='asis'}
+library(dplyr)
+library(htmltools)
+
+# ============================================================
+# RUN METADATA
+# ============================================================
+
+test_meta <- raw_data %>%
+  group_by(run_id) %>%
+  summarise(
+    sequence_num = first(sequence_num),
+    project_name = first(project_name),
+    test_name    = first(test_name),
+    .groups = "drop"
+  )
+
+current_run <- test_meta %>%
+  filter(sequence_num == max(sequence_num))
+
+baseline_run <- test_meta %>%
+  filter(sequence_num == min(sequence_num))
+
+current_run_id  <- current_run$run_id[1]
+baseline_run_id <- baseline_run$run_id[1]
+
+project_name  <- current_run$project_name[1]
+scenario_name <- current_run$test_name[1]
+
+# ============================================================
+# OVERALL RESULT
+# ============================================================
+
+overall_status <- get_run_sla_status(current_run_id)
+
+overall_result <- if (isTRUE(overall_status)) {
+  "<span class='status-pass'>PASS</span>"
+} else {
+  "<span class='status-fail'>FAIL</span>"
+}
+
+summary_class <- if (isTRUE(overall_status)) {
+  "executive-summary"
+} else {
+  "executive-summary fail"
+}
+
+overall_icon <- if (isTRUE(overall_status)) {
+  "✅"
+} else {
+  "❌"
+}
+
+# ============================================================
+# BASIC SLA STATUS + ACTUAL VS TARGET
+# ============================================================
+
+current_key <- as.character(current_run_id)
+
+vu_status <- "N/A"
+tp_status <- "N/A"
+er_status <- "N/A"
+
+vu_actual <- "-"
+vu_target <- "-"
+
+tp_actual <- "-"
+tp_target <- "-"
+
+er_actual <- "-"
+er_target <- "-"
+
+if (!is.null(sla_results[[current_key]])) {
+
+  run_rules <- sla_results[[current_key]]$rules
+
+  get_rule <- function(metric_name) {
+
+    rule <- Filter(
+      function(x) identical(x$metric, metric_name),
+      run_rules
+    )
+
+    if (length(rule) == 0) {
+      return(NULL)
+    }
+
+    rule[[1]]
+  }
+
+  # ============================================================
+  # Virtual Users
+  # ============================================================
+
+  vu_rule <- get_rule("total_users")
+
+  if (!is.null(vu_rule)) {
+
+    vu_status <- ifelse(
+      isTRUE(vu_rule$passed),
+      "PASS",
+      "FAIL"
+    )
+
+    vu_actual <- format(
+      round(vu_rule$actual, 0),
+      big.mark = ","
+    )
+
+    vu_target <- paste0(
+      vu_rule$operator,
+      " ",
+      vu_rule$threshold
+    )
+  }
+
+  # ============================================================
+  # Throughput
+  # ============================================================
+
+  tp_rule <- get_rule("throughput")
+
+  if (!is.null(tp_rule)) {
+
+    tp_status <- ifelse(
+      isTRUE(tp_rule$passed),
+      "PASS",
+      "FAIL"
+    )
+
+    tp_actual <- paste0(
+      tp_rule$actual,
+      " ",
+      tp_rule$unit
+    )
+
+    tp_target <- paste0(
+      tp_rule$operator,
+      " ",
+      tp_rule$threshold,
+      " ",
+      tp_rule$unit
+    )
+  }
+
+  # ============================================================
+  # Error Rate
+  # ============================================================
+
+  er_rule <- get_rule("error_rate")
+
+  if (!is.null(er_rule)) {
+
+    er_status <- ifelse(
+      isTRUE(er_rule$passed),
+      "PASS",
+      "FAIL"
+    )
+
+    er_actual <- paste0(
+      er_rule$actual,
+      "%"
+    )
+
+    er_target <- paste0(
+      er_rule$operator,
+      " ",
+      er_rule$threshold,
+      "%"
+    )
+  }
+}
+
+# ============================================================
+# RESPONSE TIME SLA (USER JOURNEY LEVEL)
+# ============================================================
+
+rt_summary <- get_run_rt_sla(current_run_id)
+
+journey_sla_summary <- NULL
+
+journey_passed <- 0
+journey_total  <- 0
+journey_failed <- 0
+rt_status      <- "N/A"
+
+if (!is.null(rt_summary)) {
+
+  journey_sla_summary <- rt_summary$all_labels %>%
+    left_join(
+      raw_data %>%
+        filter(run_id == current_run_id) %>%
+        distinct(label, thread_group),
+      by = "label"
+    ) %>%
+    group_by(thread_group) %>%
+    summarise(
+      passed = all(passed),
+      .groups = "drop"
+    )
+
+  journey_passed <- sum(
+    journey_sla_summary$passed,
+    na.rm = TRUE
+  )
+
+  journey_total <- nrow(
+    journey_sla_summary
+  )
+
+  journey_failed <- journey_total - journey_passed
+
+  rt_status <- if (
+    journey_failed == 0
+  ) {
+    "PASS"
+  } else {
+    "FAIL"
+  }
+}
+
+# ============================================================
+# TOP BREACHES
+# ============================================================
+
+breach_section <- ""
+
+if (!is.null(rt_summary) &&
+    rt_summary$failed_count > 0) {
+
+  top_breaches <- head(
+    rt_summary$top_breaches,
+    10
+  )
+
+  breach_items <- paste(
+    sprintf(
+      "<li>%s (%s%% breach)</li>",
+      top_breaches$label,
+      top_breaches$breach_pct
+    ),
+    collapse = ""
+  )
+
+  breach_section <- paste0(
+    "<hr/>",
+    "<b>Top SLA Breaches</b>",
+    "<ul>",
+    breach_items,
+    "</ul>"
+  )
+}
+
+# ============================================================
+# SLA STATUS COLOURS
+# ============================================================
+
+status_class <- function(x) {
+
+  if (x == "PASS") {
+    return("status-pass")
+  }
+
+  if (x == "FAIL") {
+    return("status-fail")
+  }
+
+  "status-na"
+}
+
+# ============================================================
+# PRIMARY FAILURE DRIVERS
+# ============================================================
+
+failure_items <- c()
+
+if (tp_status == "FAIL") {
+  failure_items <- c(
+    failure_items,
+    sprintf(
+      "Throughput below SLA target (%s vs %s)",
+      tp_actual,
+      tp_target
+    )
+  )
+}
+
+if (er_status == "FAIL") {
+  failure_items <- c(
+    failure_items,
+    sprintf(
+      "Error Rate exceeded SLA (%s vs %s)",
+      er_actual,
+      er_target
+    )
+  )
+}
+
+if (vu_status == "FAIL") {
+  failure_items <- c(
+    failure_items,
+    sprintf(
+      "Virtual User target not met (%s vs %s)",
+      vu_actual,
+      vu_target
+    )
+  )
+}
+
+if (rt_status == "FAIL") {
+
+  failure_items <- c(
+    failure_items,
+    sprintf(
+      "%s of %s User Journeys failed Response Time SLA",
+      journey_failed,
+      journey_total
+    )
+  )
+}
+
+failure_section <- ""
+
+if (length(failure_items) > 0) {
+
+  failure_section <- paste0(
+    "<hr/>",
+    "<div class='failure-drivers'>",
+    "<b>Primary Failure Drivers</b>",
+    "<ul>",
+    paste0("<li>", failure_items, "</li>", collapse = ""),
+    "</ul>",
+    "</div>"
+  )
+}
+
+# ============================================================
+# TOP BREACHES
+# ============================================================
+
+top_breach_section <- ""
+
+if (!is.null(rt_summary) &&
+    rt_summary$failed_count > 0) {
+
+  top_breach_section <- paste0(
+    "<hr/>",
+    "<b>Top Response Time Breaches</b>",
+    "<ul>",
+    paste(
+      sprintf(
+        "<li>%s<br/><span class='executive-subtext'>Actual: %sms | SLA: %sms | Breach: %s%%</span></li>",
+        rt_summary$top_breaches$label,
+        rt_summary$top_breaches$actual_rt,
+        rt_summary$top_breaches$threshold,
+        rt_summary$top_breaches$breach_pct
+      ),
+      collapse = ""
+    ),
+    "</ul>"
+  )
+}
+
+# ============================================================
+# HTML
+# ============================================================
+
+summary_html <- sprintf(
+'
+<div class="%s">
+
+<h2>%s OVERALL STATUS: %s</h2>
+
+<p>
+<b>Project:</b> %s<br/>
+<b>Scenario:</b> %s<br/>
+<b>Current Run:</b> %s<br/>
+<b>Baseline Run:</b> %s
+</p>
+
+<hr/>
+
+<p><b>SLA Summary</b></p>
+
+<table style="width:100%%; border-collapse:collapse;">
+
+<tr>
+  <td><b>Virtual Users</b></td>
+  <td><span class="%s">%s</span></td>
+</tr>
+<tr>
+  <td colspan="2" class="executive-subtext">
+    Actual: %s | Target: %s
+  </td>
+</tr>
+
+<tr>
+  <td><b>Throughput (Success)</b></td>
+  <td><span class="%s">%s</span></td>
+</tr>
+<tr>
+  <td colspan="2" class="executive-subtext">
+    Actual: %s | Target: %s
+  </td>
+</tr>
+
+<tr>
+  <td><b>Error Rate</b></td>
+  <td><span class="%s">%s</span></td>
+</tr>
+<tr>
+  <td colspan="2" class="executive-subtext">
+    Actual: %s | Target: %s
+  </td>
+</tr>
+
+<tr>
+  <td><b>Response Time</b></td>
+  <td>
+    <span class="%s">%s</span>
+    (%s of %s User Journeys Passed)
+  </td>
+</tr>
+
+</table>
+
+%s
+
+%s
+
+</div>
+',
+summary_class,
+
+overall_icon,
+overall_result,
+
+project_name,
+scenario_name,
+
+current_run_id,
+baseline_run_id,
+
+status_class(vu_status),
+vu_status,
+vu_actual,
+vu_target,
+
+status_class(tp_status),
+tp_status,
+tp_actual,
+tp_target,
+
+status_class(er_status),
+er_status,
+er_actual,
+er_target,
+
+status_class(rt_status),
+rt_status,
+journey_passed,
+journey_total,
+
+failure_section,
+
+top_breach_section
+)
+
+HTML(summary_html)
+```

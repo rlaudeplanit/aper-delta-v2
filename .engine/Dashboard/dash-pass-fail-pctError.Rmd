@@ -1,0 +1,82 @@
+```{r pass_fail_pctError, results='asis', echo=FALSE}
+library(flexdashboard)
+library(purrr)
+library(dplyr)
+library(knitr)
+
+# 1. Summarise transaction execution status by run
+status_df <- raw_data %>%
+  mutate(
+    success_clean = tolower(trimws(as.character(success))),
+    success = success_clean %in% c("true", "yes") | success == TRUE
+  ) %>%
+  group_by(run_id) %>%
+  summarise(
+    total_tx = n(),
+    pass_tx  = sum(success, na.rm = TRUE),
+    fail_tx  = sum(!success, na.rm = TRUE),
+    error_rate = if_else(total_tx > 0, (fail_tx / total_tx) * 100, 0),
+    .groups = "drop"
+  ) %>%
+  arrange(run_id)
+
+if (nrow(status_df) > 0) {
+  
+  # 2. Build the three-card template block with clean backticks and single-escaped newlines
+  ticks <- "```"
+  box_template <- paste0(
+    "### %s Passed\n\n",
+    ticks, "{r, echo=FALSE}\n",
+    "flexdashboard::valueBox(\n",
+    "  value   = '%s',\n",
+    "  caption = '%s',\n",
+    "  icon    = 'fa-check-circle',\n",
+    "  color   = '%s'\n",
+    ")\n",
+    ticks, "\n\n",
+    "### %s Failed\n\n",
+    ticks, "{r, echo=FALSE}\n",
+    "flexdashboard::valueBox(\n",
+    "  value   = '%s',\n",
+    "  caption = '%s',\n",
+    "  icon    = 'fa-times-circle',\n",
+    "  color   = '%s'\n",
+    ")\n",
+    ticks, "\n\n",
+    "### %s Error Rate\n\n",
+    ticks, "{r, echo=FALSE}\n",
+    "flexdashboard::valueBox(\n",
+    "  value   = '%s',\n",
+    "  caption = '%s',\n",
+    "  icon    = 'fa-exclamation-triangle',\n",
+    "  color   = '%s'\n",
+    ")\n",
+    ticks, "\n"
+  )
+  
+  # 3. Format and compile dynamic triplet cards for each run sequentially
+  src <- pmap_chr(status_df, function(run_id, pass_tx, fail_tx, error_rate, ...) {
+    # Formatted Pass Box metrics
+    pass_display <- format(pass_tx, big.mark = ",")
+    pass_caption <- sprintf("<strong>Passed Transactions</strong>")
+    
+    # Formatted Fail Box metrics
+    fail_display <- format(fail_tx, big.mark = ",")
+    fail_caption <- sprintf("<strong>Failed Transactions</strong>")
+    
+    # Formatted Error Box metrics
+    error_display <- paste0(format(round(error_rate, 2), nsmall = 2), " %")
+    error_caption <- sprintf("<strong>Error Rate</strong>")
+    
+    # Map all 12 placeholders into the clean templates
+    sprintf(box_template, 
+            run_id, pass_display, pass_caption, passedGreen,
+            run_id, fail_display, fail_caption, failedRed,
+            run_id, error_display, error_caption, planitOrange)
+  })
+  
+  cat(knit(text = paste(src, collapse = "\n"), quiet = TRUE))
+}
+
+
+```

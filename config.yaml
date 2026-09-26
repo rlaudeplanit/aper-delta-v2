@@ -1,0 +1,120 @@
+# Project Info
+params:
+  project: ""
+
+# File Locations (Relative to project root)
+rmd_template: ".engine/storyteller.Rmd" # DO NOT UPDATE
+output_dir: "//corp.ssi.govt.nz/shared/PCR/IT/ITIS/ITTS/PTT/Performance-JMeter/reports" # Where the HTML files will go e.g. //<host>/shared/Performance-JMeter/reports
+database_path: "//corp.ssi.govt.nz/shared/PCR/IT/ITIS/ITTS/PTT/Performance-JMeter/database/Performance_Vault.db" # Update if needed e.g. //<host>/shared/Performance-JMeter/database/Performance_Vault.db
+sla_file_path: "SLA/performance-sla.yaml" # Update if needed
+ai_summary_enabled: "true"
+ai_url: "https://amplify.planittesting.com/external/api/completion"
+ai_model_id: "19b89d52-23cf-463d-a5bb-c2896a0f8661"
+
+# ============================================================
+# Label Exclusions
+#
+# Labels listed here will always be excluded from analysis.
+#
+# The CLI parameter --labelFilterParam acts as an ADDITIONAL
+# exclusion list and does NOT replace these values.
+#
+# Example:
+#   config.yaml:
+#     - c_Thinktime
+#     - Test Action
+#
+#   CLI:
+#     --labelFilterParam=Debug Sampler,TC_Start
+#
+# Effective exclusions:
+#   c_Thinktime
+#   Test Action
+#   Debug Sampler
+#   TC_Start
+# ============================================================
+label_exclusions:
+  - c_Thinktime
+  - Test Action
+  - Debug Sampler
+  - c_UserLetter_pacing
+  - dw_pacing
+  - HA_pacing
+  - BDR_pacing
+  - TAS_pacing
+  - c_CMS_Pacing
+
+# Chart Visibility — set to false to hide a chart from the report.
+# All default to true (shown) unless explicitly disabled.
+charts:
+  # ============================================================
+  # CORE OVERVIEW CHARTS (Recommended: keep enabled)
+  # These establish the overall performance story.
+  # Turning these OFF may make the report harder to interpret.
+  # ============================================================
+  tpmVerticalStack: true # Overall system load (throughput trend)
+  rawScatterWebGL: true # Overall response time distribution
+
+  rtVsUserLoad: true # Load vs performance relationship
+  throughputVsRT: true # Scalability behaviour
+
+  # ============================================================
+  # DIAGNOSTIC / BREAKDOWN (Optional)
+  # Useful for identifying problematic tests and distributions
+  # ============================================================
+  tpmVerticalStackByCsvFilename: true
+  rawScatterWebGLByCsvFilename: true
+  vUsersPerMinute: true
+  avgRtBreakdown: true
+  pct90RtBreakdown: true
+  txCountBreakdown: true
+
+  # ============================================================
+  # DEEP DIVE (Optional - detail-heavy)
+  # Helps pinpoint exact slow transactions
+  # ============================================================
+  groupedAvgRT: true
+  groupedPercentiles: true
+
+  # ============================================================
+  # STABILITY / ERRORS (Recommended but optional)
+  # Important for reliability insights
+  # ============================================================
+  errorsPerMinute: true
+
+# System Default Engine - DO NOT EDIT
+tool_type: "jmeter"
+tool_mappings:
+  jmeter:
+    timestamp: "timeStamp"
+    elapsed: "elapsed"
+    label: "label"
+    responseCode: "responseCode"
+    responseMessage: "responseMessage"
+    threadName: "threadName"
+    dataType: "dataType"
+    success: "success"
+    failureMessage: "failureMessage"
+    bytes: "bytes"
+    sentBytes: "sentBytes"
+    grpThreads: "grpThreads"
+    allThreads: "allThreads"
+    URL: "URL"
+    Latency: "Latency"
+    IdleTime: "IdleTime"
+    Connect: "Connect"
+    userPath: "" # JMeter-native doesn't use this, left empty
+    population: "" # JMeter-native doesn't use this, left empty
+
+  neoload:
+    timestamp: "Time" # NeoLoad raw files usually call this 'Time' or 'Date'
+    elapsed: "Response time" # NeoLoad raw transactional files often use 'Duration' instead of 'Response time'
+    label: "Element" # NeoLoad raw exports often use 'User Path Element' instead of 'Element'
+    success: "Success"
+    threadName: "Virtual User ID"
+    userPath: "User Path"
+    population: "Population"
+
+# Reporting Settings
+bin_size: 60
+user_action_filter: ".*" # Regex to include all transactions

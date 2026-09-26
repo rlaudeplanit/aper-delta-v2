@@ -1,0 +1,73 @@
+# ==============================================================================
+# performance-sla.yaml
+# ------------------------------------------------------------------------------
+# Defines SLA thresholds applied globally across all run_ids in a report.
+# Referenced from config.yaml via: sla_file: "SLA/performance-sla.yaml"
+#
+# If sla_file is empty or the file is not found, SLA processing is skipped
+# entirely and the report renders normally without SLA indicators.
+#
+# Supported operators: "<=", ">=", "<", ">", "=="
+# ==============================================================================
+
+sla_rules:
+
+  - metric: total_users
+    label: "Virtual Users"
+    operator: ">="
+    threshold: 1
+    description: "At least 1 virtual user must be recorded for the run to be valid."
+
+  - metric: error_rate
+    label: "Error Rate"
+    operator: "<="
+    threshold: 15.00exec
+    unit: "%"
+    description: "Overall error rate must not exceed 15%."
+
+  - metric: throughput
+    label: "Throughput"
+    operator: ">="
+    threshold: 5.1
+    unit: "tps"
+    description: "Throughput must sustain at least 5 transactions per second."
+    application_thresholds:
+      - app_name: "MyMSD-CPP-X5"
+        threshold: 5.1
+      - app_name: "ECS-X5"
+        threshold: 2.0
+      - app_name: "EOS"
+        threshold: 5.1
+      - app_name: "CPP"
+        threshold: 5.1
+      - app_name: "APIM"
+        threshold: 5.1
+      - app_name: "BPM"
+        threshold: 5.1
+
+    
+# ==============================================================================
+# RESPONSE TIME SLA — per-transaction (label) evaluation
+# ------------------------------------------------------------------------------
+# metric: which percentile to evaluate — "p90" or "p95"
+# default_threshold: applied to ANY transaction not listed in "overrides"
+# tolerance_pct: allows actual value to exceed threshold by this % and still pass
+#                (0 = strict, no tolerance)
+# overrides: per-transaction custom thresholds — only list exceptions here.
+#            New/unlisted transactions automatically use default_threshold.
+#            Only labels that starts-with.
+# ==============================================================================
+
+response_time_sla:
+  metric: p95
+  unit: "ms"
+  default_threshold: 50
+  tolerance_pct: 5
+
+  overrides:
+    - label: "MyMSD"
+      threshold: 3000
+    - label: "CMS"
+      threshold: 100
+    - label: "MyMSD_003_Login_ButtonSelection_Registration"
+      threshold: 2000
