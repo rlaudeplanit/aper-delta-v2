@@ -19,7 +19,7 @@ comparison_display <- comparison %>%
   select(application, everything()) %>%
   rename(
     `Application` = application,
-    `User Journey`    = thread_group,
+    `Scenario`    = thread_group,
     `Label`       = label
   )
 
@@ -27,7 +27,7 @@ helper_cols <- c("label_has_sla_breach", "label_tooltip")
 
 metric_cols <- which(
   !names(comparison_display) %in%
-    c("Application", "User Journey", "Label", helper_cols)
+    c("Application", "Scenario", "Label", helper_cols)
 ) - 1
 
 # ============================================================

@@ -1,5 +1,5 @@
 ---
-title: "`r params$project` - Performance Comparison Report"
+title: "Performance Test Summary Report"
 subtitle: "Scenario: `r params$scenario` | Runs: `r paste(params$runs, collapse=', ')`"
 date: "`r format(Sys.time(), '%d %B, %Y')`"
 output:
@@ -81,6 +81,7 @@ formatted_run_ids <- paste0("'", gsub("'", "''", resolved_run_ids), "'", collaps
 # ── Step 2: Tool-Aware Schema Projections ──
 bytes_col         <- if (params$tool == "jmeter") "bytes" else "0 AS bytes"
 response_code_col <- if (params$tool == "jmeter") "responseCode" else "'0' AS responseCode"
+response_msg_col <- if (params$tool == "jmeter") "responseMessage" else "'0' AS responseMessage"
 
 # ── Step 3: Dynamic Multi-Keyword SQL Filter Construction ──
 sql_filter_clause <- ""
@@ -124,11 +125,12 @@ query <- sprintf("
     success,
     %s,
     %s,
+    %s,
     user_index
   FROM %s
   WHERE run_id IN (%s)%s
   ORDER BY timestamp ASC
-", bytes_col, response_code_col, target_table, formatted_run_ids, sql_filter_clause)
+", bytes_col, response_code_col, response_msg_col, target_table, formatted_run_ids, sql_filter_clause)
 
 # Execute query and extract dataset
 raw_data <- dbGetQuery(con, query)
@@ -492,23 +494,6 @@ get_run_rt_sla <- function(run_id) {
   rt_sla_results[[key]]
 }
 
-# Helper to get overall SLA status for a run
-get_run_sla_status <- function(run_id) {
-  key <- as.character(run_id)
-
-  has_basic_sla <- length(sla_results) > 0 && !is.null(sla_results[[key]])
-  has_rt_sla    <- length(rt_sla_results) > 0 && !is.null(rt_sla_results[[key]])
-
-  if (!has_basic_sla && !has_rt_sla) {
-    return(NA)
-  }
-
-  basic_pass <- if (has_basic_sla) sla_results[[key]]$overall_pass else TRUE
-  rt_pass    <- if (has_rt_sla) (rt_sla_results[[key]]$failed_count == 0) else TRUE
-
-  basic_pass && rt_pass
-}
-
 get_app_tps_threshold <- function(app_name) {
 
   throughput_rule <- Filter(
@@ -528,6 +513,27 @@ get_app_tps_threshold <- function(app_name) {
   }
 
   throughput_rule$threshold
+}
+
+get_app_error_threshold <- function(app_name) {
+
+  error_rule <- Filter(
+    function(x) x$metric == "error_rate",
+    sla_config$sla_rules
+  )[[1]]
+
+  overrides <- error_rule$application_thresholds
+
+  app_rule <- Filter(
+    function(x) identical(x$app_name, app_name),
+    overrides
+  )
+
+  if (length(app_rule) > 0) {
+    return(as.numeric(app_rule[[1]]$threshold))
+  }
+
+  as.numeric(error_rule$threshold)
 }
 
 # ============================================================
@@ -555,61 +561,19 @@ is_chart_enabled <- function(chart_key) {
 
 ```
 
+## Row
+
+---
+
 ```{r dash-scorecard-loader, child='.engine/Dashboard/dash-scorecard.Rmd'}
 
 ```
 
+## Row
+
+---
+
 ```{r dash-application-health-loader, child='.engine/Dashboard/dash-application-health.Rmd'}
-
-```
-
-<!-- ## Row
-
-### Test Info
-
-```{r info, echo = FALSE}
-library(flexdashboard)
-source(here::here(".engine/Utilities", "utils.R"))
-
-flexdashboard::valueBox(
-                value = "Test Information",
-                color = planitLightGrey
-              )
-```
-
-## Row
-
----
-
-```{r dash-testSummary-loader, child='.engine/Dashboard/dash-testSummary.Rmd'}
-
-```
-
-## Row
-
-### Metric
-
-```{r metric, echo = FALSE}
-library(flexdashboard)
-source(here::here(".engine/Utilities", "utils.R"))
-
-flexdashboard::valueBox(
-                value = "Performance Metrics",
-                color = planitLightGrey
-              )
-```
-
-## Row
-
----
-
-```{r dash-metrics-loader, child='.engine/Dashboard/dash-metrics.Rmd'}
-
-```
-
-## Row
-
-```{r dash-rt-sla-loader, child='.engine/Dashboard/dash-rt-sla.Rmd'}
 
 ```
 
@@ -618,8 +582,6 @@ flexdashboard::valueBox(
 ```{r dash-aiSummary-loader, child='.engine/Dashboard/dash-aiSummary.Rmd'}
 
 ```
-
--->
 
 ## Row {data-height=60}
 

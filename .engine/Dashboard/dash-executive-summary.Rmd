@@ -27,29 +27,38 @@ baseline_run_id <- baseline_run$run_id[1]
 project_name  <- current_run$project_name[1]
 scenario_name <- current_run$test_name[1]
 
-# ============================================================
-# OVERALL RESULT
-# ============================================================
+applications <- raw_data %>%
+  filter(run_id == current_run_id) %>%
+  distinct(app_name) %>%
+  arrange(app_name) %>%
+  pull(app_name)
 
-overall_status <- get_run_sla_status(current_run_id)
+application_list <- paste(
+  applications,
+  collapse = ", "
+)
 
-overall_result <- if (isTRUE(overall_status)) {
-  "<span class='status-pass'>PASS</span>"
-} else {
-  "<span class='status-fail'>FAIL</span>"
-}
-
-summary_class <- if (isTRUE(overall_status)) {
-  "executive-summary"
-} else {
-  "executive-summary fail"
-}
-
-overall_icon <- if (isTRUE(overall_status)) {
-  "✅"
-} else {
-  "❌"
-}
+error_summary <- raw_data %>%
+  filter(run_id == current_run_id) %>%
+  mutate(
+    is_pass = tolower(trimws(as.character(success))) %in%
+      c("true", "yes", "1")
+  ) %>%
+  group_by(
+    app_name,
+    label
+  ) %>%
+  summarise(
+    total_transactions = n(),
+    errors = sum(!is_pass, na.rm = TRUE),
+    error_rate = round(
+      errors / total_transactions * 100,
+      2
+    ),
+    .groups = "drop"
+  ) %>%
+  filter(errors > 0) %>%
+  arrange(desc(errors))
 
 # ============================================================
 # BASIC SLA STATUS + ACTUAL VS TARGET
@@ -113,80 +122,24 @@ if (!is.null(sla_results[[current_key]])) {
       vu_rule$threshold
     )
   }
-
-  # ============================================================
-  # Throughput
-  # ============================================================
-
-  tp_rule <- get_rule("throughput")
-
-  if (!is.null(tp_rule)) {
-
-    tp_status <- ifelse(
-      isTRUE(tp_rule$passed),
-      "PASS",
-      "FAIL"
-    )
-
-    tp_actual <- paste0(
-      tp_rule$actual,
-      " ",
-      tp_rule$unit
-    )
-
-    tp_target <- paste0(
-      tp_rule$operator,
-      " ",
-      tp_rule$threshold,
-      " ",
-      tp_rule$unit
-    )
-  }
-
-  # ============================================================
-  # Error Rate
-  # ============================================================
-
-  er_rule <- get_rule("error_rate")
-
-  if (!is.null(er_rule)) {
-
-    er_status <- ifelse(
-      isTRUE(er_rule$passed),
-      "PASS",
-      "FAIL"
-    )
-
-    er_actual <- paste0(
-      er_rule$actual,
-      "%"
-    )
-
-    er_target <- paste0(
-      er_rule$operator,
-      " ",
-      er_rule$threshold,
-      "%"
-    )
-  }
 }
 
 # ============================================================
-# RESPONSE TIME SLA (USER JOURNEY LEVEL)
+# RESPONSE TIME SLA (USER SCENARIO LEVEL)
 # ============================================================
 
 rt_summary <- get_run_rt_sla(current_run_id)
 
-journey_sla_summary <- NULL
+scenario_sla_summary <- NULL
 
-journey_passed <- 0
-journey_total  <- 0
-journey_failed <- 0
+scenario_passed <- 0
+scenario_total  <- 0
+scenario_failed <- 0
 rt_status      <- "N/A"
 
 if (!is.null(rt_summary)) {
 
-  journey_sla_summary <- rt_summary$all_labels %>%
+  scenario_sla_summary <- rt_summary$all_labels %>%
     left_join(
       raw_data %>%
         filter(run_id == current_run_id) %>%
@@ -199,19 +152,19 @@ if (!is.null(rt_summary)) {
       .groups = "drop"
     )
 
-  journey_passed <- sum(
-    journey_sla_summary$passed,
+  scenario_passed <- sum(
+    scenario_sla_summary$passed,
     na.rm = TRUE
   )
 
-  journey_total <- nrow(
-    journey_sla_summary
+  scenario_total <- nrow(
+    scenario_sla_summary
   )
 
-  journey_failed <- journey_total - journey_passed
+  scenario_failed <- scenario_total - scenario_passed
 
   rt_status <- if (
-    journey_failed == 0
+    scenario_failed == 0
   ) {
     "PASS"
   } else {
@@ -219,37 +172,139 @@ if (!is.null(rt_summary)) {
   }
 }
 
-# ============================================================
-# TOP BREACHES
-# ============================================================
-
-breach_section <- ""
-
-if (!is.null(rt_summary) &&
-    rt_summary$failed_count > 0) {
-
-  top_breaches <- head(
-    rt_summary$top_breaches,
-    10
+rt_failed_details <- rt_summary$all_labels %>%
+  left_join(
+    raw_data %>%
+      filter(run_id == current_run_id) %>%
+      distinct(label, thread_group),
+    by = "label"
+  ) %>%
+  filter(!passed) %>%
+  group_by(thread_group) %>%
+  summarise(
+    actual_rt = max(actual_rt, na.rm = TRUE),
+    threshold = max(threshold, na.rm = TRUE),
+    .groups = "drop"
   )
 
-  breach_items <- paste(
-    sprintf(
-      "<li>%s (%s%% breach)</li>",
-      top_breaches$label,
-      top_breaches$breach_pct
+failed_rt_scenarios <- scenario_sla_summary %>%
+  filter(!passed)
+
+# ============================================================
+# THROUGHPUT SLA (APP LEVEL)
+# ============================================================
+
+tp_scenario_summary <- raw_data %>%
+  filter(run_id == current_run_id) %>%
+  mutate(
+    is_pass = tolower(trimws(as.character(success))) %in%
+      c("true", "yes", "1")
+  ) %>%
+  group_by(
+    app_name,
+    thread_group
+  ) %>%
+  summarise(
+    successful_transactions = sum(is_pass),
+
+    duration_secs = as.numeric(
+      difftime(
+        max(timestamp),
+        min(timestamp),
+        units = "secs"
+      )
     ),
-    collapse = ""
-  )
 
-  breach_section <- paste0(
-    "<hr/>",
-    "<b>Top SLA Breaches</b>",
-    "<ul>",
-    breach_items,
-    "</ul>"
-  )
-}
+    throughput = ifelse(
+      duration_secs > 0,
+      round(
+        successful_transactions /
+        duration_secs,
+        2
+      ),
+      0
+    ),
+    .groups = "drop"
+  ) %>%
+  rowwise() %>%
+  mutate(
+
+    # Uses app-specific TPS threshold if configured.
+    # Falls back to global threshold otherwise.
+    target = get_app_tps_threshold(app_name),
+
+    passed = throughput >= target
+
+  ) %>%
+  ungroup()
+
+tp_scenario_passed <- sum(
+  tp_scenario_summary$passed,
+  na.rm = TRUE
+)
+
+tp_scenario_total <- nrow(
+  tp_scenario_summary
+)
+
+failed_tp_scenarios <- tp_scenario_summary %>%
+  filter(!passed)
+
+# ============================================================
+# ERROR RATE SLA (USER SCENARIO LEVEL)
+# ============================================================
+
+er_scenario_summary <- raw_data %>%
+  filter(run_id == current_run_id) %>%
+  mutate(
+    is_pass = tolower(trimws(as.character(success))) %in%
+      c("true", "yes", "1")
+  ) %>%
+  group_by(
+    app_name,
+    thread_group
+  ) %>%
+  summarise(
+
+    transactions = n(),
+
+    errors = sum(
+      !is_pass,
+      na.rm = TRUE
+    ),
+
+    error_rate = round(
+      errors /
+      transactions * 100,
+      2
+    ),
+
+    .groups = "drop"
+
+  ) %>%
+  rowwise() %>%
+  mutate(
+
+    # Uses app-specific Error Rate threshold if configured.
+    # Falls back to global threshold otherwise.
+    target = get_app_error_threshold(app_name),
+
+    passed = error_rate <= target
+
+  ) %>%
+  ungroup()
+
+failed_er_scenarios <- er_scenario_summary %>%
+  filter(!passed)
+
+er_scenario_passed <- sum(
+  er_scenario_summary$passed,
+  na.rm = TRUE
+)
+
+er_scenario_total <- nrow(
+  er_scenario_summary
+)
 
 # ============================================================
 # SLA STATUS COLOURS
@@ -268,6 +323,147 @@ status_class <- function(x) {
   "status-na"
 }
 
+status_colour <- function(status) {
+
+  if (status == "PASS") {
+    return("#28a745")
+  }
+
+  if (status == "FAIL") {
+    return("#dc3545")
+  }
+
+  "#6c757d"
+}
+
+delta_label <- function(
+  current,
+  baseline,
+  lower_is_better = FALSE
+) {
+
+  if (is.na(current) || is.na(baseline)) {
+    return("No Baseline")
+  }
+
+  if (baseline == 0) {
+
+    if (current == 0) {
+      return("▬ No Change from Baseline")
+    }
+
+    return("▲ New Metric vs Baseline")
+  }
+
+  delta <- round(
+    ((current - baseline) / baseline) * 100,
+    1
+  )
+
+  if (delta == 0) {
+    return("▬ No Change from Baseline")
+  }
+
+  if (lower_is_better) {
+
+    if (delta < 0) {
+
+      return(
+        sprintf(
+          "▼ %.1f%% from Baseline",
+          abs(delta)
+        )
+      )
+
+    }
+
+    return(
+      sprintf(
+        "▲ %.1f%% from Baseline",
+        delta
+      )
+    )
+  }
+
+  if (delta > 0) {
+
+    return(
+      sprintf(
+        "▲ %.1f%% from Baseline",
+        delta
+      )
+    )
+
+  }
+
+  sprintf(
+    "▼ %.1f%% from Baseline",
+    abs(delta)
+  )
+
+}
+# ============================================================
+# APPLICATION TPS PASS RATE
+# ============================================================
+
+app_tps_summary <- raw_data %>%
+  filter(run_id == current_run_id) %>%
+  mutate(
+    is_pass = tolower(trimws(as.character(success))) %in%
+      c("true", "yes", "1")
+  ) %>%
+  group_by(app_name) %>%
+  summarise(
+    successful_transactions = sum(is_pass),
+    duration_secs = as.numeric(
+      difftime(
+        max(timestamp),
+        min(timestamp),
+        units = "secs"
+      )
+    ),
+    throughput = ifelse(
+      duration_secs > 0,
+      successful_transactions / duration_secs,
+      0
+    ),
+    .groups = "drop"
+  ) %>%
+  rowwise() %>%
+  mutate(
+    target = get_app_tps_threshold(app_name),
+    passed = throughput >= target
+  ) %>%
+  ungroup()
+
+tp_app_passed <- sum(
+  app_tps_summary$passed,
+  na.rm = TRUE
+)
+
+tp_app_total <- nrow(
+  app_tps_summary
+)
+
+failed_tp_apps <- app_tps_summary %>%
+  filter(!passed)
+
+tp_status <- if (
+  tp_app_passed == tp_app_total
+) {
+  "PASS"
+} else {
+  "FAIL"
+}
+
+er_status <- if (
+  er_scenario_passed == er_scenario_total
+) {
+  "PASS"
+} else {
+  "FAIL"
+}
+
 # ============================================================
 # PRIMARY FAILURE DRIVERS
 # ============================================================
@@ -275,25 +471,64 @@ status_class <- function(x) {
 failure_items <- c()
 
 if (tp_status == "FAIL") {
+
+  tp_details <- paste0(
+    "<ul>",
+    paste(
+      sprintf(
+        "<li><span class='executive-subtext'>%s - %.2f TPS (Target: %.2f TPS)</span></li>",
+        failed_tp_apps$app_name,
+        failed_tp_apps$throughput,
+        failed_tp_apps$target
+      ),
+
+      collapse = ""
+    ),
+    "</ul>"
+  )
+
   failure_items <- c(
     failure_items,
-    sprintf(
-      "Throughput below SLA target (%s vs %s)",
-      tp_actual,
-      tp_target
+    paste0(
+      sprintf(
+        "%s of %s Applications failed Throughput SLA",
+        tp_app_total - tp_app_passed,
+        tp_app_total
+      ),
+      tp_details
     )
   )
+
 }
 
 if (er_status == "FAIL") {
+
+  er_details <- paste0(
+    "<ul>",
+    paste(
+      sprintf(
+        "<li><span class='executive-subtext'>%s - %.2f%% (Target: %.2f%%)</span></li>",
+        failed_er_scenarios$thread_group,
+        failed_er_scenarios$error_rate,
+        failed_er_scenarios$target
+      ),
+      collapse = ""
+    ),
+    "</ul>"
+  )
+
   failure_items <- c(
     failure_items,
-    sprintf(
-      "Error Rate exceeded SLA (%s vs %s)",
-      er_actual,
-      er_target
+    paste0(
+      sprintf(
+        "%s of %s User Scenarios failed Error Rate SLA",
+        er_scenario_total - er_scenario_passed,
+        er_scenario_total
+      ),
+      er_details
     )
   )
+
 }
 
 if (vu_status == "FAIL") {
@@ -309,14 +544,38 @@ if (vu_status == "FAIL") {
 
 if (rt_status == "FAIL") {
 
+  rt_details <- paste0(
+    "<ul>",
+    paste(
+      sprintf(
+        "<li><span class='executive-subtext'>%s - %s ms (SLA: %s ms)</span></li>",
+        rt_failed_details$thread_group,
+        format(
+          round(rt_failed_details$actual_rt),
+          big.mark = ","
+        ),
+        format(
+          round(rt_failed_details$threshold),
+          big.mark = ","
+        )
+      ),
+      collapse = ""
+    ),
+    "</ul>"
+  )
+
   failure_items <- c(
     failure_items,
-    sprintf(
-      "%s of %s User Journeys failed Response Time SLA",
-      journey_failed,
-      journey_total
+    paste0(
+      sprintf(
+        "%s of %s User Scenarios failed Response Time SLA",
+        scenario_failed,
+        scenario_total
+      ),
+      rt_details
     )
   )
+
 }
 
 failure_section <- ""
@@ -324,14 +583,240 @@ failure_section <- ""
 if (length(failure_items) > 0) {
 
   failure_section <- paste0(
-    "<hr/>",
     "<div class='failure-drivers'>",
-    "<b>Primary Failure Drivers</b>",
     "<ul>",
     paste0("<li>", failure_items, "</li>", collapse = ""),
     "</ul>",
     "</div>"
   )
+}
+
+failure_card <- paste0(
+  '<div style="
+      flex:1;
+      background:#f8f9fa;
+      border:1px solid #dee2e6;
+      border-radius:4px;
+      padding:14px;
+    ">',
+  '<h3 class="section-header">Primary Failure Drivers</h3>',
+  failure_section,
+  '</div>'
+)
+
+# ============================================================
+# TOP ERRORS
+# ============================================================
+
+error_details <- raw_data %>%
+  filter(run_id == current_run_id) %>%
+  mutate(
+    is_pass = tolower(trimws(as.character(success))) %in%
+      c("true", "yes", "1"),
+    responseCode = if ("responseCode" %in% names(.))
+    as.character(responseCode)
+    else
+    "N/A",
+    responseMessage = if ("responseMessage" %in% names(.))
+    as.character(responseMessage)
+    else
+    "Unknown Error"
+  ) %>%
+  filter(!is_pass) %>%
+  group_by(
+    app_name,
+    label,
+    responseCode,
+    responseMessage
+  ) %>%
+  summarise(
+    error_count = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(
+    app_name,
+    label,
+    desc(error_count)
+  )
+
+build_error_tooltip <- function(df) {
+
+  top_errors <- head(df, 3)
+
+  additional_count <- max(
+    nrow(df) - 3,
+    0
+  )
+
+  tooltip <- paste(
+    ifelse(
+      top_errors$responseCode == "0" &
+      top_errors$responseMessage == "0",
+
+      sprintf(
+        "No response code and error message (%s Errors)",
+        top_errors$error_count
+      ),
+
+      sprintf(
+        "HTTP %s - %s (%s Errors)",
+        top_errors$responseCode,
+        top_errors$responseMessage,
+        top_errors$error_count
+      )
+    ),
+    collapse = "\n\n"
+  )
+
+  if (additional_count > 0) {
+
+    tooltip <- paste0(
+      tooltip,
+      "\n\n+",
+      additional_count,
+      " additional error types"
+    )
+
+  }
+
+  tooltip
+
+}
+
+top_errors <- error_summary %>%
+  slice_head(n = 10)
+
+error_title <- "Top Error Contributors"
+
+if (nrow(error_summary) > 0) {
+
+  error_title <- sprintf(
+    "Top %s of %s Error Contributors",
+    nrow(top_errors),
+    nrow(error_summary)
+  )
+
+}
+
+error_rows <- paste(
+  apply(
+    top_errors,
+    1,
+    function(r) {
+
+      transaction_errors <- error_details %>%
+        filter(
+          app_name == r["app_name"],
+          label == r["label"]
+        )
+
+      tooltip_text <- build_error_tooltip(
+        transaction_errors
+      )
+
+      tooltip_text <- gsub(
+        "'",
+        "&apos;",
+        tooltip_text
+      )
+
+      sprintf(
+        "
+        <tr>
+          <td>%s</td>
+
+          <td>
+            %s
+            <i class='fa fa-info-circle breach-tooltip'
+               title='%s'>
+            </i>
+          </td>
+
+          <td class='numeric-cell'>%s</td>
+
+          <td class='numeric-cell'>%s</td>
+
+          <td class='numeric-cell'>%s%%</td>
+        </tr>
+        ",
+        r["app_name"],
+        r["label"],
+        tooltip_text,
+        format(
+          as.numeric(r["total_transactions"]),
+          big.mark = ","
+        ),
+        format(
+          as.numeric(r["errors"]),
+          big.mark = ","
+        ),
+        sprintf(
+          "%.2f",
+          as.numeric(r["error_rate"])
+        )
+      )
+
+    }
+  ),
+  collapse = ""
+)
+
+if (nrow(error_summary) == 0) {
+
+  error_card <- '
+  <div style="
+      flex:1;
+      background:#f8f9fa;
+      border:1px solid #dee2e6;
+      border-radius:4px;
+      padding:14px;
+  ">
+
+    <h3 class="section-header">
+      Error Summary
+    </h3>
+
+    <p class="status-pass">
+      ✓ No transaction errors detected during the test run.
+    </p>
+
+  </div>
+  '
+
+} else {
+
+  error_card <- sprintf(
+  '
+  <div style="
+      flex:1;
+      background:#f8f9fa;
+      border:1px solid #dee2e6;
+      border-radius:4px;
+      padding:14px;
+  ">
+
+    <h3 class="section-header">%s</h3>
+
+    <table class="scorecard-table">
+
+      <tr>
+        <th>Application</th>
+        <th>Transaction</th>
+        <th class="numeric-header">Total Transactions</th>
+        <th class="numeric-header">Error Count</th>
+        <th class="numeric-header">Error Rate</th>
+      </tr>
+
+      %s
+
+    </table>
+
+  </div>
+  ',
+  error_title,
+  error_rows
+  )
+
 }
 
 # ============================================================
@@ -343,9 +828,7 @@ top_breach_section <- ""
 if (!is.null(rt_summary) &&
     rt_summary$failed_count > 0) {
 
-  top_breach_section <- paste0(
-    "<hr/>",
-    "<b>Top Response Time Breaches</b>",
+  top_breach_section <- paste0( 
     "<ul>",
     paste(
       sprintf(
@@ -361,109 +844,641 @@ if (!is.null(rt_summary) &&
   )
 }
 
+breach_title <- "Top Response Time Breaches"
+
+if (
+  !is.null(rt_summary) &&
+  rt_summary$failed_count > 0
+) {
+
+  breach_title <- sprintf(
+    "Top %s of %s Response Time Breaches",
+    nrow(rt_summary$top_breaches),
+    rt_summary$failed_count
+  )
+
+}
+
+breach_card <- paste0(
+  '<div style="
+      flex:1;
+      background:#f8f9fa;
+      border:1px solid #dee2e6;
+      border-radius:4px;
+      padding:14px;
+    ">',
+  sprintf(
+    '<h3 class="section-header">%s</h3>',
+    breach_title
+  ),
+  top_breach_section,
+  '</div>'
+)
+
+run_summary <- raw_data %>%
+  mutate(
+    is_pass = tolower(trimws(as.character(success))) %in%
+      c("true","yes","1")
+  ) %>%
+  group_by(run_id) %>%
+  summarise(
+    users = n_distinct(user_index),
+    tx_count = n(),
+    pass_count = sum(is_pass),
+    duration_secs = as.numeric(
+      difftime(
+        max(timestamp),
+        min(timestamp),
+        units = "secs"
+      )
+    ),
+    throughput = ifelse(
+      duration_secs > 0,
+      round(pass_count / duration_secs, 2),
+      0
+    ),
+    error_rate = round(
+      sum(!is_pass) / tx_count * 100,
+      2
+    ),
+    .groups = "drop"
+  )
+
+current_run_stats <- run_summary %>%
+  filter(run_id == current_run_id)
+
+baseline_run_stats <- run_summary %>%
+  filter(run_id == baseline_run_id)
+
+current_users <- current_run_stats$users[1]
+baseline_users <- baseline_run_stats$users[1]
+
+current_tp <- current_run_stats$throughput[1]
+baseline_tp <- baseline_run_stats$throughput[1]
+
+current_er <- current_run_stats$error_rate[1]
+baseline_er <- baseline_run_stats$error_rate[1]
+
+current_p95 <- raw_data %>%
+  filter(run_id == current_run_id) %>%
+  summarise(
+    v = round(
+      quantile(elapsed, 0.95, na.rm = TRUE),
+      0
+    )
+  ) %>%
+  pull(v)
+
+baseline_p95 <- raw_data %>%
+  filter(run_id == baseline_run_id) %>%
+  summarise(
+    v = round(
+      quantile(elapsed, 0.95, na.rm = TRUE),
+      0
+    )
+  ) %>%
+  pull(v)
+
+vu_delta <- delta_label(
+  current_users,
+  baseline_users
+)
+
+tp_delta <- delta_label(
+  current_tp,
+  baseline_tp
+)
+
+er_delta <- delta_label(
+  current_er,
+  baseline_er,
+  lower_is_better = TRUE
+)
+
+rt_delta <- delta_label(
+  current_p95,
+  baseline_p95,
+  lower_is_better = TRUE
+)
+
+rt_title <- "Response Time"
+
+if (
+  exists("rt_sla_config") &&
+  !is.null(rt_sla_config$metric)
+) {
+
+  rt_title <- paste(
+    toupper(rt_sla_config$metric),
+    "Response Time"
+  )
+
+}
+
+current_start <- raw_data %>%
+  filter(run_id == current_run_id) %>%
+  summarise(v = min(timestamp, na.rm = TRUE)) %>%
+  pull(v)
+
+current_end <- raw_data %>%
+  filter(run_id == current_run_id) %>%
+  summarise(v = max(timestamp, na.rm = TRUE)) %>%
+  pull(v)
+
+baseline_start <- raw_data %>%
+  filter(run_id == baseline_run_id) %>%
+  summarise(v = min(timestamp, na.rm = TRUE)) %>%
+  pull(v)
+
+baseline_end <- raw_data %>%
+  filter(run_id == baseline_run_id) %>%
+  summarise(v = max(timestamp, na.rm = TRUE)) %>%
+  pull(v)
+
+current_duration <- paste(
+  round(as.numeric(difftime(
+    current_end,
+    current_start,
+    units = "mins"
+  ))),
+  "minutes"
+)
+
+baseline_duration <- paste(
+  round(as.numeric(difftime(
+    baseline_end,
+    baseline_start,
+    units = "mins"
+  ))),
+  "minutes"
+)
+
+current_start_fmt <- format(
+  current_start,
+  "%d %b %Y, %I:%M:%S %p"
+)
+
+current_end_fmt <- format(
+  current_end,
+  "%d %b %Y, %I:%M:%S %p"
+)
+
+baseline_start_fmt <- format(
+  baseline_start,
+  "%d %b %Y, %I:%M:%S %p"
+)
+
+baseline_end_fmt <- format(
+  baseline_end,
+  "%d %b %Y, %I:%M:%S %p"
+)
+
+# ============================================================
+# OVERALL RESULT
+# ============================================================
+# PASS when:
+# - Virtual User SLA passes
+# - All Throughput application SLAs pass
+# - All Error Rate scenario SLAs pass
+# - All Response Time scenario SLAs pass
+# ============================================================
+
+overall_status <-
+  vu_status == "PASS" &&
+  tp_app_passed == tp_app_total &&
+  er_scenario_passed == er_scenario_total &&
+  scenario_passed == scenario_total
+
+overall_result <- if (isTRUE(overall_status)) {
+  "<span class='status-pass'>PASS</span>"
+} else {
+  "<span class='status-fail'>FAIL</span>"
+}
+
+summary_class <- if (isTRUE(overall_status)) {
+  "executive-summary"
+} else {
+  "executive-summary fail"
+}
+
+overall_icon <- if (isTRUE(overall_status)) {
+  "✅"
+} else {
+  "❌"
+}
+
 # ============================================================
 # HTML
 # ============================================================
+
+header_cards <- sprintf(
+'
+<div style="
+  display:flex;
+  gap:14px;
+  margin-bottom:18px;
+">
+
+  <!-- Test Details -->
+  <div style="
+      flex:1;
+      background:#f8f9fa;
+      border:1px solid #dee2e6;
+      border-radius:4px;
+      padding:14px 16px;
+  ">
+    <div style="
+      font-size:13px;
+      color:#6c757d;
+      text-transform:uppercase;
+      font-weight:600;
+      margin-bottom:8px;
+    ">
+      Test Details
+    </div>
+
+    <div style="display:flex;">
+      <span style="width:24px;">🗀</span>
+      <span style="width:100px;"><strong>Project:</strong></span>
+      <span>%s</span>
+    </div>
+
+    <div style="display:flex; margin-top:6px;">
+      <span style="width:24px;">🧪</span>
+      <span style="width:100px;"><strong>Test Name:</strong></span>
+      <span>%s</span>
+    </div>
+
+    <div style="display:flex; margin-top:6px;">
+      <span style="width:24px;">🖥</span>
+      <span style="width:100px;"><strong>Applications:</strong></span>
+      <span>%s</span>
+    </div>
+
+  </div>
+
+  <!-- Current Run -->
+  <div style="
+      flex:1;
+      background:#f8f9fa;
+      border:1px solid #dee2e6;
+      border-radius:4px;
+      padding:14px 16px;
+  ">
+    <div style="
+      font-size:13px;
+      color:#6c757d;
+      text-transform:uppercase;
+      font-weight:600;
+      margin-bottom:8px;
+    ">
+      Current Run
+    </div>
+
+    <div><strong>%s</strong></div>
+
+    <div style="margin-top:8px; display:flex;">
+    <span style="width:80px; color:#6c757d;">⏱ Duration</span>
+    <span>%s</span>
+    </div>
+
+    <div style="margin-top:4px; display:flex;">
+    <span style="width:80px; color:#6c757d;">▷ Started</span>
+    <span>%s</span>
+    </div>
+
+    <div style="margin-top:4px; display:flex;">
+    <span style="width:80px; color:#6c757d;">▢ Ended</span>
+    <span>%s</span>
+    </div>
+
+  </div>
+
+  <!-- Baseline Run -->
+  <div style="
+      flex:1;
+      background:#f8f9fa;
+      border:1px solid #dee2e6;
+      border-radius:4px;
+      padding:14px 16px;
+  ">
+    <div style="
+      font-size:13px;
+      color:#6c757d;
+      text-transform:uppercase;
+      font-weight:600;
+      margin-bottom:8px;
+    ">
+      Baseline Run
+    </div>
+
+    <div><strong>%s</strong></div>
+
+    <div style="margin-top:8px; display:flex;">
+    <span style="width:80px; color:#6c757d;">⏱ Duration</span>
+    <span>%s</span>
+    </div>
+
+    <div style="margin-top:4px; display:flex;">
+    <span style="width:80px; color:#6c757d;">▷ Started</span>
+    <span>%s</span>
+    </div>
+
+    <div style="margin-top:4px; display:flex;">
+    <span style="width:80px; color:#6c757d;">▢ Ended</span>
+    <span>%s</span>
+    </div>
+
+  </div>
+
+</div>
+',
+project_name,
+scenario_name,
+application_list,
+current_run_id,
+current_duration,
+current_start_fmt,
+current_end_fmt,
+baseline_run_id,
+baseline_duration,
+baseline_start_fmt,
+baseline_end_fmt
+)
 
 summary_html <- sprintf(
 '
 <div class="%s">
 
-<h2>%s OVERALL STATUS: %s</h2>
+  <h2>%s OVERALL STATUS: %s</h2>
 
-<p>
-<b>Project:</b> %s<br/>
-<b>Scenario:</b> %s<br/>
-<b>Current Run:</b> %s<br/>
-<b>Baseline Run:</b> %s
-</p>
+  %s
 
-<hr/>
+  <hr/>
 
-<p><b>SLA Summary</b></p>
+  <p>
 
-<table style="width:100%%; border-collapse:collapse;">
+  <div style="
+    display:flex;
+    align-items:center;
+    gap:8px;
+  ">
+    <h3 class="section-header">
+      PASS/FAIL Summary
+    </h3>
+    <i style="
+        color:#6c757d;
+        cursor:help;
+        font-size:14px;
+        margin-top:-2px;"
+      class="fa fa-info-circle breach-tooltip"
+      title="Max Users
+    Peak concurrent virtual users executed.
 
-<tr>
-  <td><b>Virtual Users</b></td>
-  <td><span class="%s">%s</span></td>
-</tr>
-<tr>
-  <td colspan="2" class="executive-subtext">
-    Actual: %s | Target: %s
-  </td>
-</tr>
+    Avg. Throughput
+    Average successful transactions per second (TPS).
 
-<tr>
-  <td><b>Throughput (Success)</b></td>
-  <td><span class="%s">%s</span></td>
-</tr>
-<tr>
-  <td colspan="2" class="executive-subtext">
-    Actual: %s | Target: %s
-  </td>
-</tr>
+    %% Error
+    Percentage of failed transactions.
 
-<tr>
-  <td><b>Error Rate</b></td>
-  <td><span class="%s">%s</span></td>
-</tr>
-<tr>
-  <td colspan="2" class="executive-subtext">
-    Actual: %s | Target: %s
-  </td>
-</tr>
+    P95 Response Time
+    95%% of transactions completed within this time.
 
-<tr>
-  <td><b>Response Time</b></td>
-  <td>
-    <span class="%s">%s</span>
-    (%s of %s User Journeys Passed)
-  </td>
-</tr>
+    TPS SLA Pass Rate
+    Percentage of applications meeting throughput SLA targets.
 
-</table>
+    %% Error SLA Pass Rate
+    Percentage of user scenarios meeting error rate SLA targets.
 
-%s
+    RT SLA Pass Rate
+    Percentage of user scenarios meeting response time SLA targets.
+    "></i>
+  </div>
+  </p>
 
-%s
+  <div style="
+    display:flex;
+    gap:14px;
+    flex-wrap:nowrap;
+    margin-top:10px;
+  ">
+
+    <!-- Max Users -->
+
+    <div style="
+        flex:1 1 0;
+        min-width:0;
+        background:#f8f9fa;
+        border:1px solid #dee2e6;
+        border-left:5px solid %s;
+        border-radius:4px;
+        padding:14px 16px;
+        text-align:left;
+    ">
+
+      <div style="
+        font-size:32px;
+        color:%s;
+        font-weight:400;
+      ">
+        %s
+      </div>
+
+      <div style="
+        margin-top:10px;
+        font-size:18px;
+        color:#444;
+      ">
+        Max Users
+      </div>
+
+    </div>
+
+    <!-- Throughput -->
+
+    <div style="
+        flex:1 1 0;
+        min-width:0;
+        background:#f8f9fa;
+        border:1px solid #dee2e6;
+        border-left:5px solid %s;
+        border-radius:4px;
+        padding:14px 16px;
+        text-align:left;
+    ">
+
+      <div>
+        <span style="
+          font-size:32px;
+          color:%s;
+          font-weight:400;
+        ">
+          %s of %s
+        </span>
+
+        <span style="
+          font-size:22px;
+          color:%s;
+          margin-left:4px;
+        ">
+          Applications Passed
+        </span>
+      </div>
+
+      <div style="
+        margin-top:10px;
+        font-size:18px;
+        color:#444;
+      ">
+        Avg. Throughput (TPS)
+      </div>
+
+    </div>
+
+    <!-- Response Time -->
+
+    <div style="
+        flex:1 1 0;
+        min-width:0;
+        background:#f8f9fa;
+        border:1px solid #dee2e6;
+        border-left:5px solid %s;
+        border-radius:4px;
+        padding:14px 16px;
+        text-align:left;
+    ">
+
+      <div>
+        <span style="
+          font-size:32px;
+          color:%s;
+          font-weight:400;
+        ">
+          %s of %s
+        </span>
+
+        <span style="
+          font-size:22px;
+          color:%s;
+          margin-left:4px;
+        ">
+          Scenarios Passed
+        </span>
+      </div>
+
+      <div style="
+        margin-top:10px;
+        font-size:18px;
+        color:#444;
+      ">
+        %s
+      </div>
+
+    </div>
+
+    <!-- Error Rate -->
+
+    <div style="
+        flex:1 1 0;
+        min-width:0;
+        background:#f8f9fa;
+        border:1px solid #dee2e6;
+        border-left:5px solid %s;
+        border-radius:4px;
+        padding:14px 16px;
+        text-align:left;
+    ">
+
+      <div>
+        <span style="
+          font-size:32px;
+          color:%s;
+          font-weight:400;
+        ">
+          %s of %s
+        </span>
+
+        <span style="
+          font-size:22px;
+          color:%s;
+          margin-left:4px;
+        ">
+          Scenarios Passed
+        </span>
+      </div>
+
+      <div style="
+        margin-top:10px;
+        font-size:18px;
+        color:#444;
+      ">
+        %% Error
+      </div>
+
+    </div>
+
+  </div>
+
+  <div style="
+    display:flex;
+    gap:14px;
+    margin-top:18px;
+    align-items:stretch;
+    ">
+    
+    %s
+    
+    %s
+    
+  </div>
+  <div style="
+    display:flex;
+    gap:14px;
+    margin-top:18px;
+    align-items:stretch;
+    ">
+    
+    %s
+  </div>
 
 </div>
 ',
+
 summary_class,
 
 overall_icon,
 overall_result,
 
-project_name,
-scenario_name,
+header_cards,
 
-current_run_id,
-baseline_run_id,
+status_colour(vu_status),
+status_colour(vu_status),
+format(current_users, big.mark = ","),
 
-status_class(vu_status),
-vu_status,
-vu_actual,
-vu_target,
+status_colour(tp_status),
+status_colour(tp_status),
+# sprintf("%.2f TPS", current_tp),
+tp_app_passed,
+tp_app_total,
+status_colour(tp_status),
 
-status_class(tp_status),
-tp_status,
-tp_actual,
-tp_target,
+status_colour(rt_status),
+status_colour(rt_status),
+scenario_passed,
+scenario_total,
+status_colour(rt_status),
+rt_title,
 
-status_class(er_status),
-er_status,
-er_actual,
-er_target,
+status_colour(er_status),
+status_colour(er_status),
+# sprintf("%.2f%%", current_er),
+er_scenario_passed,
+er_scenario_total,
+status_colour(er_status),
 
-status_class(rt_status),
-rt_status,
-journey_passed,
-journey_total,
-
-failure_section,
-
-top_breach_section
+failure_card,
+breach_card,
+error_card
 )
 
 HTML(summary_html)

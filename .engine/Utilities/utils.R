@@ -227,7 +227,7 @@ render_observation_panel <- function(chart_id, initial_text = "") {
     htmltools::tags$div(
       style = "display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;",
       
-      htmltools::tags$h4("Observation", style = sprintf("margin: 0; color: %s;", planitLightGrey)),
+      htmltools::tags$h4("Remarks", style = sprintf("margin: 0; color: %s;", planitLightGrey)),
       
       # Toggle Button — Defaults to 'Edit' action because Preview mode is active by default
       htmltools::tags$button(
@@ -240,7 +240,7 @@ render_observation_panel <- function(chart_id, initial_text = "") {
     # Raw Text Editor (Hidden by default, placeholder contains formatting guide)
     htmltools::tags$textarea(
       id = paste0(chart_id, "_comment"),
-      placeholder = "Enter observations... (Syntax: **bold** | _italic_ | __underline__ | ==highlight==)",
+      placeholder = "Enter remarks... (Syntax: **bold** | _italic_ | __underline__ | ==highlight==)",
       style = sprintf("
         display: none;
         width: 100%%;
@@ -289,7 +289,7 @@ render_observation_panel <- function(chart_id, initial_text = "") {
       htmltools::tags$div(
         style = "text-align: right;",
         htmltools::tags$button(
-          "💾 Save Observations File",
+          "💾 Save Remarks File",
           id = paste0(chart_id, "_save_js"),
           style = "
             background-color: #28a745;
@@ -381,7 +381,7 @@ render_observation_panel <- function(chart_id, initial_text = "") {
       if (window.REPORT_OBSERVATIONS && window.REPORT_OBSERVATIONS[CHART_ID] !== undefined) {
         textarea.value = window.REPORT_OBSERVATIONS[CHART_ID];
         localStorage.setItem(STORAGE_KEY, window.REPORT_OBSERVATIONS[CHART_ID]);
-        status.innerHTML = '✓ Observations Loaded';
+        status.innerHTML = '✓ Remarks Loaded';
       } else {
         const localVal = localStorage.getItem(STORAGE_KEY);
         if (localVal !== null) textarea.value = localVal;

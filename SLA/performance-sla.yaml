@@ -21,21 +21,34 @@ sla_rules:
   - metric: error_rate
     label: "Error Rate"
     operator: "<="
-    threshold: 15.00exec
+    threshold: 10.00
     unit: "%"
-    description: "Overall error rate must not exceed 15%."
+    description: "Error rate per scenario must not exceed XX%."
+    application_thresholds: # overrides
+      - app_name: "MyMSD-CPP-X5"
+        threshold: 10.00
+      - app_name: "ECS-X5"
+        threshold: 10.00
+      - app_name: "EOS"
+        threshold: 10.00
+      - app_name: "CPP"
+        threshold: 10.00
+      - app_name: "APIM"
+        threshold: 10.00
+      - app_name: "BPM"
+        threshold: 10.00
 
   - metric: throughput
     label: "Throughput"
     operator: ">="
     threshold: 5.1
     unit: "tps"
-    description: "Throughput must sustain at least 5 transactions per second."
-    application_thresholds:
+    description: "Throughput per application must sustain at least X transactions per second."
+    application_thresholds: # overrides
       - app_name: "MyMSD-CPP-X5"
         threshold: 5.1
       - app_name: "ECS-X5"
-        threshold: 2.0
+        threshold: 3.9
       - app_name: "EOS"
         threshold: 5.1
       - app_name: "CPP"
@@ -62,7 +75,6 @@ response_time_sla:
   metric: p95
   unit: "ms"
   default_threshold: 50
-  tolerance_pct: 5
 
   overrides:
     - label: "MyMSD"

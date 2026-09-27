@@ -35,7 +35,6 @@ body {
   color: inherit;
 }
 
-
 /* ============================================================
    NAVIGATION BAR
 ============================================================ */
@@ -73,19 +72,28 @@ body {
 .section.level3 h3 {
   background: #E5E7EB;
   color: #111827;
-  border-left: 6px solid #2563EB;
+  /*border-left: 6px solid #2563EB;*/
+  border-left: 6px solid;
   padding: 10px 14px;
   border-radius: 4px;
   font-weight: 600;
   margin-bottom: 10px;
 }
 
+.section-header {
+  color: #111827;
+  font-weight: 400;
+  margin: 0 0 12px 0;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #E5E7EB;
+}
 
 /* ============================================================
    EXECUTIVE SUMMARY
 ============================================================ */
 
 .executive-summary {
+  width: 100%;
   background: #FFFFFF;
   color: #111827;
   border-left: 6px solid #198754;
@@ -105,6 +113,15 @@ body {
   font-size: 28px;
 }
 
+.sub-executive-summary {
+  width: 100%;
+  background: #FFFFFF;
+  color: #111827;
+  border-radius: 8px;
+  padding: 18px 22px;
+  margin-bottom: 15px;
+  box-shadow: 0 1px 4px rgba(0,0,0,.10);
+}
 
 /* ============================================================
    SCORECARD TABLES
@@ -119,17 +136,56 @@ body {
   background-color: #374151;
   color: white;
   padding: 10px;
+  border-right: 1px solid rgba(255,255,255,0.12);
 }
 
 .scorecard-table td {
   padding: 10px;
   border-bottom: 1px solid #E5E7EB;
+  border-right: 1px solid #E5E7EB;
+}
+
+.scorecard-table th:last-child,
+.scorecard-table td:last-child {
+  border-right: none;
 }
 
 .scorecard-table tr:hover {
   background-color: #F3F4F6;
 }
 
+/* ============================================================
+   SCORECARD
+============================================================ */
+
+.scorecard-header {
+  font-size: 22px;
+  font-weight: 700;
+  color: #111827;
+  margin-bottom: 10px;
+}
+
+/* .status-pass {
+  color: #198754;
+  font-weight: 700;
+}
+
+.status-fail {
+  color: #DC3545;
+  font-weight: 700;
+}
+
+.status-na {
+  color: #6B7280;
+  font-weight: 700;
+} */
+
+.executive-subtext {
+  padding-left: 20px;
+  padding-bottom: 8px;
+  font-size: 13px;
+  color: #6B7280;
+}
 
 /* ============================================================
    APPLICATION HEALTH / SLA TABLES
@@ -311,46 +367,15 @@ pre {
   min-width: 55px;
 }
 
-.executive-subtext {
-  padding-left: 20px;
-  padding-bottom: 8px;
-  font-size: 12px;
-  color: #6B7280;
-}
-
-.failure-drivers {
-  margin-top: 10px;
-}
-
-.failure-drivers ul {
-  margin-top: 5px;
-  margin-bottom: 0;
-}
-
-/* ============================================================
-   SCORECARD
-============================================================ */
-
-.scorecard-header {
-  font-size: 22px;
+.total-app {
+  background-color: #E5E7EB;
+  color: #4B5563;
   font-weight: 700;
-  color: #111827;
-  margin-bottom: 10px;
-}
-
-.status-pass {
-  color: #198754;
-  font-weight: 700;
-}
-
-.status-fail {
-  color: #DC3545;
-  font-weight: 700;
-}
-
-.status-na {
-  color: #6B7280;
-  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 5px;
+  display: inline-block;
+  text-align: center;
+  min-width: 55px;
 }
 
 .executive-subtext {
@@ -373,4 +398,17 @@ pre {
   margin-left: 6px;
   color: #6C757D;
   cursor: help;
+}
+
+/* ============================================================
+   APP HEALTH SUMMARY
+============================================================ */
+.app-health-summary {
+  width: 100%;
+  background: #FFFFFF;
+  color: #111827;
+  border-radius: 8px;
+  padding: 18px 22px;
+  margin-bottom: 15px;
+  box-shadow: 0 1px 4px rgba(0,0,0,.10);
 }

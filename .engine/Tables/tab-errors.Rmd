@@ -29,7 +29,7 @@ prepped_error_logs_display <- prepped_error_logs %>%
   rename(any_of(c(
     `Application`   = "Application",
     `Run ID`        = "run_id",
-    `User Journey` = "thread_group",
+    `Scenario` = "thread_group",
     `Label`         = "label",
     `Response Code` = "Response Code",
     `Timestamp`     = "timestamp"

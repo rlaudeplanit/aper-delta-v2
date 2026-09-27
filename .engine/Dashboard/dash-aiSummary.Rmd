@@ -1,4 +1,5 @@
 ```{r dash_aiSummary_Amplify, echo=FALSE, message=FALSE, warning=FALSE}
+source(here::here(".engine/Utilities", "utils.R"))
 library(httr)
 library(jsonlite)
 library(htmltools)
@@ -23,16 +24,17 @@ if (!ai_enabled) {
 } else if (is.null(api_key) || api_key == "") {
 
   # error_text <- "\u26a0 AI Generated Summary unavailable: api_key not found."
-  template_text <- paste(
-      "==OVERALL PASSED/FAILED==",
-    "",
-    "Current run achieved the expected load of **[Virtual Users]** with a throughput of **[TPS]**.",
-    "An error rate of **[Error Rate]** was observed during execution.",
-    "Response Time SLA status: **[Passed/Failed]**.",
-    "Compared to the previous run, performance **[improved/regressed/remained stable]**.",
-    "Key recommendation: **[Recommendation]**.",
-    sep = "\n"
-  )
+  template_text <- "Enter remarks here.."
+  # template_text <- paste(
+  #     "==OVERALL PASSED/FAILED==",
+  #   "",
+  #   "Current run achieved the expected load of **[Virtual Users]** with a throughput of **[TPS]**.",
+  #   "An error rate of **[Error Rate]** was observed during execution.",
+  #   "Response Time SLA status: **[Passed/Failed]**.",
+  #   "Compared to the previous run, performance **[improved/regressed/remained stable]**.",
+  #   "Key recommendation: **[Recommendation]**.",
+  #   sep = "\n"
+  # )
 
   htmltools::tags$div(
     style = "width: 100%; box-sizing: border-box;",

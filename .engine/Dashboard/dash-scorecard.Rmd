@@ -59,7 +59,7 @@ if (!is.null(current_rt) &&
 
   current_rt_pass_rate <- round(
     (current_rt$passed_count /
-       current_rt$total_labels) * 100,
+      current_rt$total_labels) * 100,
     1
   )
 }
@@ -69,33 +69,157 @@ if (!is.null(baseline_rt) &&
 
   baseline_rt_pass_rate <- round(
     (baseline_rt$passed_count /
-       baseline_rt$total_labels) * 100,
+      baseline_rt$total_labels) * 100,
     1
   )
 }
 
 # ============================================================
+# TPS SLA PASS RATE
+# ============================================================
+
+get_tps_sla_pass_rate <- function(target_run_id) {
+
+summary <- raw_data %>%
+  filter(run_id == target_run_id) %>%
+  mutate(
+    is_pass = tolower(trimws(as.character(success))) %in%
+      c("true", "yes", "1")
+  ) %>%
+  group_by(app_name) %>%
+  summarise(
+    successful_transactions = sum(is_pass),
+    duration_secs = as.numeric(
+      difftime(
+        max(timestamp),
+        min(timestamp),
+        units = "secs"
+      )
+    ),
+    throughput = ifelse(
+      duration_secs > 0,
+      successful_transactions / duration_secs,
+      0
+    ),
+    .groups = "drop"
+  ) %>%
+  rowwise() %>%
+  mutate(
+    target = get_app_tps_threshold(app_name),
+    passed = throughput >= target
+  ) %>%
+  ungroup()
+
+if (nrow(summary) == 0) {
+  return(NA)
+}
+
+round(
+  sum(summary$passed, na.rm = TRUE) /
+    nrow(summary) * 100,
+  2
+)
+}
+
+current_tps_pass_rate <-
+get_tps_sla_pass_rate(current_run_id)
+
+baseline_tps_pass_rate <-
+get_tps_sla_pass_rate(baseline_run_id)
+
+# ============================================================
+# ERROR SLA PASS RATE
+# ============================================================
+
+get_error_sla_pass_rate <- function(target_run_id) {
+
+summary <- raw_data %>%
+  filter(run_id == target_run_id) %>%
+  mutate(
+    is_pass = tolower(trimws(as.character(success))) %in%
+      c("true", "yes", "1")
+  ) %>%
+  group_by(app_name, thread_group) %>%
+  summarise(
+    transactions = n(),
+    errors = sum(!is_pass, na.rm = TRUE),
+    error_rate = round(
+      errors / transactions * 100,
+      2
+    ),
+    .groups = "drop"
+  ) %>%
+  rowwise() %>%
+  mutate(
+    target = get_app_error_threshold(app_name),
+    passed = error_rate <= target
+  ) %>%
+  ungroup()
+
+if (nrow(summary) == 0) {
+  return(NA)
+}
+
+round(
+  sum(summary$passed, na.rm = TRUE) /
+    nrow(summary) * 100,
+  2
+)
+}
+
+current_error_pass_rate <-
+get_error_sla_pass_rate(current_run_id)
+
+baseline_error_pass_rate <-
+get_error_sla_pass_rate(baseline_run_id)
+
+# ============================================================
 # RESPONSE TIME
 # ============================================================
 
-current_p95 <- raw_data %>%
+rt_percentile <- 0.95
+
+if (
+  exists("rt_sla_config") &&
+  !is.null(rt_sla_config$metric)
+) {
+
+  rt_percentile <- switch(
+    tolower(rt_sla_config$metric),
+    "p90" = 0.90,
+    "p95" = 0.95,
+    "p99" = 0.99,
+    0.95
+  )
+
+}
+
+current_rt_value <- raw_data %>%
   filter(run_id == current_run_id) %>%
   summarise(
     v = round(
-      quantile(elapsed, 0.95, na.rm = TRUE),
+      quantile(
+        elapsed,
+        rt_percentile,
+        na.rm = TRUE
+      ),
       0
     )
   ) %>%
   pull(v)
 
-baseline_p95 <- raw_data %>%
+baseline_rt_value <- raw_data %>%
   filter(run_id == baseline_run_id) %>%
   summarise(
     v = round(
-      quantile(elapsed, 0.95, na.rm = TRUE),
-      0
-    )
-  ) %>%
+      quantile(
+        elapsed,
+        rt_percentile,
+        na.rm = TRUE
+      ),
+              0
+            )
+          ) %>%
   pull(v)
 
 # ============================================================
@@ -103,8 +227,8 @@ baseline_p95 <- raw_data %>%
 # ============================================================
 
 delta_text <- function(current,
-                       baseline,
-                       lower_is_better = FALSE) {
+                      baseline,
+                      lower_is_better = FALSE) {
 
   if (is.na(current) || is.na(baseline)) {
     return("—")
@@ -113,11 +237,11 @@ delta_text <- function(current,
   if (baseline == 0) {
 
     if (current == 0) {
-      return("▬ 0%")
+      return("<span class='status-na'>▬ 0%</span>")
     }
 
     return(
-      "<span class='status-fail'>New Errors</span>"
+      "<span class='status-fail'>▲ Increase</span>"
     )
   }
 
@@ -127,7 +251,7 @@ delta_text <- function(current,
   )
 
   if (delta == 0) {
-    return("▬ 0.00%")
+    return("<span class='status-na'>▬ 0%</span>")
   }
 
   if (lower_is_better) {
@@ -166,70 +290,123 @@ delta_text <- function(current,
   )
 }
 
+rt_metric_name <- "P95"
+
+if (
+exists("rt_sla_config") &&
+!is.null(rt_sla_config$metric)
+) {
+
+rt_metric_name <- toupper(
+  rt_sla_config$metric
+)
+
+}
+
 # ============================================================
 # SCORECARD HTML
 # ============================================================
 
 scorecard_html <- sprintf(
 '
-<div class="executive-summary">
+<div class="sub-executive-summary">
+  
+  <div style="
+    display:flex;
+    align-items:center;
+    gap:8px;
+  ">
+    <h3 class="section-header">
+      Performance Trend Summary
+    </h3>
+      <i style="
+        color:#6c757d;
+        cursor:help;
+        font-size:14px;
+        margin-top:-2px;"
+        class="fa fa-info-circle breach-tooltip"
+        title="Max Users
+    Peak concurrent virtual users executed.
 
-<h3 class="scorecard-header">
-Current vs Baseline Scorecard
-</h3>
+    Avg. Throughput
+    Average successful transactions per second (TPS).
 
-<table class="scorecard-table" style="margin-top:0;">
+    %% Error
+    Percentage of failed transactions.
 
-<tr>
-<th>Metric</th>
-<th>Current</th>
-<th>Baseline</th>
-<th>Delta</th>
-</tr>
+    P95 Response Time
+    95%% of transactions completed within this time.
 
-<tr>
-<td>Virtual Users</td>
-<td class=\"numeric-cell\">%s</td>
-<td class=\"numeric-cell\">%s</td>
-<td class=\"numeric-cell\">%s</td>
-</tr>
+    TPS SLA Pass Rate
+    Percentage of applications meeting throughput SLA targets.
 
-<tr>
-<td>Transaction Count</td>
-<td class=\"numeric-cell\">%s</td>
-<td class=\"numeric-cell\">%s</td>
-<td class=\"numeric-cell\">%s</td>
-</tr>
+    %% Error SLA Pass Rate
+    Percentage of user scenarios meeting error rate SLA targets.
 
-<tr>
-<td>Throughput (Success)</td>
-<td class=\"numeric-cell\">%s tps</td>
-<td class=\"numeric-cell\">%s tps</td>
-<td class=\"numeric-cell\">%s</td>
-</tr>
+    RT SLA Pass Rate
+    Percentage of user scenarios meeting response time SLA targets.
+    "></i>
+  </div>
+  
+  <table class="scorecard-table" style="margin-top:0;">
 
-<tr>
-<td>Error Rate</td>
-<td class=\"numeric-cell\">%s%%</td>
-<td class=\"numeric-cell\">%s%%</td>
-<td class=\"numeric-cell\">%s</td>
-</tr>
+  <tr>
+  <th>Metric</th>
+  <th>Current</th>
+  <th>Baseline</th>
+  <th>Delta</th>
+  </tr>
 
-<tr>
-<td>User Journey SLA Pass Rate</td>
-<td class=\"numeric-cell\">%s%%</td>
-<td class=\"numeric-cell\">%s%%</td>
-<td class=\"numeric-cell\">%s</td>
-</tr>
+  <tr>
+  <td>Max Users</td>
+  <td class=\"numeric-cell\">%s VU</td>
+  <td class=\"numeric-cell\">%s VU</td>
+  <td class=\"numeric-cell\">%s</td>
+  </tr>
 
-<tr>
-<td>P95 Response Time</td>
-<td class=\"numeric-cell\">%s ms</td>
-<td class=\"numeric-cell\">%s ms</td>
-<td class=\"numeric-cell\">%s</td>
-</tr>
+  <tr>
+  <td>Avg. Throughput</td>
+  <td class=\"numeric-cell\">%s TPS</td>
+  <td class=\"numeric-cell\">%s TPS</td>
+  <td class=\"numeric-cell\">%s</td>
+  </tr>
 
-</table>
+  <tr>
+  <td>%% Error</td>
+  <td class=\"numeric-cell\">%s%%</td>
+  <td class=\"numeric-cell\">%s%%</td>
+  <td class=\"numeric-cell\">%s</td>
+  </tr>
+
+  <tr>
+  <td>%s Response Time</td>
+  <td class=\"numeric-cell\">%s ms</td>
+  <td class=\"numeric-cell\">%s ms</td>
+  <td class=\"numeric-cell\">%s</td>
+  </tr>
+
+  <tr>
+  <td>TPS SLA Pass Rate</td>
+  <td class="numeric-cell">%s%%</td>
+  <td class="numeric-cell">%s%%</td>
+  <td class="numeric-cell">%s</td>
+  </tr>
+
+  <tr>
+  <td>%% Error SLA Pass Rate</td>
+  <td class="numeric-cell">%s%%</td>
+  <td class="numeric-cell">%s%%</td>
+  <td class="numeric-cell">%s</td>
+  </tr>
+
+  <tr>
+  <td>RT SLA Pass Rate</td>
+  <td class=\"numeric-cell\">%s%%</td>
+  <td class=\"numeric-cell\">%s%%</td>
+  <td class=\"numeric-cell\">%s</td>
+  </tr>
+
+  </table>
 
 </div>
 ',
@@ -243,18 +420,9 @@ delta_text(
   baseline$users[1]
 ),
 
-# Transactions
-format(current$tx_count[1], big.mark = ","),
-format(baseline$tx_count[1], big.mark = ","),
-
-delta_text(
-  current$tx_count[1],
-  baseline$tx_count[1]
-),
-
 # Throughput
-current$throughput[1],
-baseline$throughput[1],
+sprintf("%.2f", current$throughput[1]),
+sprintf("%.2f", baseline$throughput[1]),
 
 delta_text(
   current$throughput[1],
@@ -262,8 +430,8 @@ delta_text(
 ),
 
 # Error Rate
-current$error_rate[1],
-baseline$error_rate[1],
+sprintf("%.2f", current$error_rate[1]),
+sprintf("%.2f", baseline$error_rate[1]),
 
 delta_text(
   current$error_rate[1],
@@ -271,23 +439,42 @@ delta_text(
   lower_is_better = TRUE
 ),
 
+# Response Times
+rt_metric_name,
+format(current_rt_value, big.mark = ","),
+format(baseline_rt_value, big.mark = ","),
+
+delta_text(
+  current_rt_value,
+  baseline_rt_value,
+  lower_is_better = TRUE
+),
+
+# TPS SLA Pass Rate
+sprintf("%.2f", current_tps_pass_rate),
+sprintf("%.2f", baseline_tps_pass_rate),
+
+delta_text(
+  current_tps_pass_rate,
+  baseline_tps_pass_rate
+),
+
+# Error SLA Pass Rate
+sprintf("%.2f", current_error_pass_rate),
+sprintf("%.2f", baseline_error_pass_rate),
+
+delta_text(
+  current_error_pass_rate,
+  baseline_error_pass_rate
+),
+
 # RT SLA Pass Rate
-current_rt_pass_rate,
-baseline_rt_pass_rate,
+sprintf("%.2f", current_rt_pass_rate),
+sprintf("%.2f", baseline_rt_pass_rate),
 
 delta_text(
   current_rt_pass_rate,
   baseline_rt_pass_rate
-),
-
-# P95
-current_p95,
-baseline_p95,
-
-delta_text(
-  current_p95,
-  baseline_p95,
-  lower_is_better = TRUE
 )
 
 )
