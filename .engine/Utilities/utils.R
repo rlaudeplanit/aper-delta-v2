@@ -209,9 +209,9 @@ render_observation_panel <- function(chart_id, initial_text = "") {
   report_id <- if (exists("params") && !is.null(params$report_id)) params$report_id else "default_report"
   
   # Palette definitions
-  planitLightGrey <- "#DADADA"
-  planitGrey      <- "#7d7d7d"
-  planitDarkGrey  <- "#444444"
+  planitLightGrey <- "#444444"
+  planitGrey      <- "#dee2e6"
+  planitDarkGrey  <- "#f8f9fa"
   
   htmltools::tags$div(
     style = sprintf("
@@ -233,7 +233,7 @@ render_observation_panel <- function(chart_id, initial_text = "") {
       htmltools::tags$button(
         "✏️ Edit",
         id = paste0(chart_id, "_toggle_view"),
-        style = sprintf("color: %s; background-color: #333333; border: 1px solid %s; padding: 3px 10px; font-size: 11px; border-radius: 3px; cursor: pointer;", planitLightGrey, planitGrey)
+        style = sprintf("color: %s; background-color: #f8f9fa; border: 1px solid %s; padding: 3px 10px; font-size: 11px; border-radius: 3px; cursor: pointer;", planitLightGrey, planitGrey)
       )
     ),
     
@@ -250,7 +250,7 @@ render_observation_panel <- function(chart_id, initial_text = "") {
         padding: 10px;
         font-family: Consolas, monospace;
         color: %s;
-        background-color: #2b2b2b;
+        background-color: #ffffff;
         border: 1px solid %s;
         border-radius: 4px;
       ", planitLightGrey, planitGrey),
@@ -268,7 +268,7 @@ render_observation_panel <- function(chart_id, initial_text = "") {
         padding: 10px;
         font-family: 'Prompt', sans-serif;
         color: %s;
-        background-color: #2b2b2b;
+        background-color: #ffffff;
         border: 1px solid %s;
         border-radius: 4px;
         overflow-y: auto;
