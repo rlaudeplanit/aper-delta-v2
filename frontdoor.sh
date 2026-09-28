@@ -98,7 +98,6 @@ done
 RAW_RESULTS_FOLDER="NONE"
 COMP1="NONE"
 COMP2="NONE"
-COMP3="NONE"
 TOOL_TYPE="jmeter"
 LABEL_FILTER="NONE"
 
@@ -140,20 +139,21 @@ else
     "--opMode=menu" \
     "--active_tool=$TOOL_TYPE"
 
-  # Collect up to 3 Run IDs or Sequence Numbers
+  # Collect up to 2 Run IDs or Sequence Numbers (Baseline + Current)
   RUN_IDS=()
   echo ""
-  echo "Enter up to 3 Run IDs or Sequence Numbers (#) to compare."
-  echo "Press ENTER on an empty line when finished."
+  echo "Enter up to 2 Run IDs or Sequence Numbers — Baseline first, then Current."
+  echo "Press ENTER on an empty line when done (at least 1 required)."
 
-  while [ ${#RUN_IDS[@]} -lt 3 ]; do
+  while [ ${#RUN_IDS[@]} -lt 2 ]; do
     current_count=$((${#RUN_IDS[@]} + 1))
-    read -r -p "Enter Run ID or Sequence # $current_count: " input_run
+    if [ "$current_count" -eq 1 ]; then label="Baseline"; else label="Current"; fi
+    read -r -p "Enter $label Run ID or Sequence #$current_count: " input_run
     if [ -z "$input_run" ]; then
       if [ ${#RUN_IDS[@]} -ge 1 ]; then
         break
       else
-        echo "You must enter at least one Run ID to generate a report."
+        echo "At least one Run ID is required to generate a report."
       fi
     else
       RUN_IDS+=("$input_run")
@@ -162,7 +162,6 @@ else
 
   COMP1="${RUN_IDS[0]:-NONE}"
   COMP2="${RUN_IDS[1]:-NONE}"
-  COMP3="${RUN_IDS[2]:-NONE}"
 
   echo ""
   read -r -p "Enter transaction label filter (e.g. Login) or press Enter to include all: " input_filter
@@ -188,7 +187,6 @@ else
     "--opMode=$OP_MODE" \
     "--comp1=$COMP1" \
     "--comp2=$COMP2" \
-    "--comp3=$COMP3" \
     "--active_tool=$TOOL_TYPE" \
     "--labelFilterParam=$LABEL_FILTER"
 fi

@@ -11,9 +11,9 @@
 ### Commands:
 ################### Rscript .engine\worker.R --opMode=register --rawResultsFolder="C:\Full\Path\ToFolder" --active_tool=jmeter
 ################### Rscript .engine\worker.R --opMode=register --rawResultsFolder="C:\Full\Path\ToFolder" --active_tool=neoload
-############ Comparative Report Mode:
-################### Rscript .engine\worker.R --opMode=report --comp1=1 --comp2=2 --active_tool=jmeter --labelFilterParam=Demo
-################### Rscript .engine\worker.R --opMode=report --comp1=1 --comp2=2 --active_tool=neoload --labelFilterParam=Demo
+############ Report Mode (1 or 2 runs — comp1=baseline, comp2=current):
+################### Rscript .engine\worker.R --opMode=report --comp1=<baseline> --comp2=<current> --active_tool=jmeter --labelFilterParam=Demo
+################### Rscript .engine\worker.R --opMode=report --comp1=<baseline> --comp2=<current> --active_tool=neoload --labelFilterParam=Demo
 
 rm(list = ls())
 gc()
@@ -68,7 +68,6 @@ args_map <- list(
   rawResultsFolder = "NONE",
   comp1            = "NONE",
   comp2            = "NONE",
-  comp3            = "NONE",
   active_tool      = "jmeter",
   outputFolder     = "NONE",
   labelFilterParam = "NONE"
@@ -89,7 +88,6 @@ opMode           <- args_map$opMode
 rawResultsFolder <- args_map$rawResultsFolder
 comp1            <- args_map$comp1
 comp2            <- args_map$comp2
-comp3            <- args_map$comp3
 active_tool      <- args_map$active_tool
 outputFolder     <- args_map$outputFolder
 labelFilterParam <- args_map$labelFilterParam
@@ -377,7 +375,7 @@ if (opMode == "register") {
 
 if (opMode == "report") {
 
-  selected_runs <- c(comp1, comp2, comp3)
+  selected_runs <- c(comp1, comp2)
   selected_runs <- selected_runs[selected_runs != "NONE"]
 
   target_table  <- paste0("performance_history_", active_tool)

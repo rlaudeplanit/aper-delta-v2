@@ -1,6 +1,4 @@
 ```{r dash-sla-disclaimer, echo=FALSE, results='asis'}
-library(htmltools)
-
 # Only show the disclaimer if SLA was actually evaluated (no point showing it if no SLA exists at all)
 has_any_sla <- (length(sla_results) > 0) || (length(rt_sla_results) > 0)
 

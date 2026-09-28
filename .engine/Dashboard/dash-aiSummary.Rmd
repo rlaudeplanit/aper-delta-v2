@@ -3,10 +3,9 @@ source(here::here(".engine/Utilities", "utils.R"))
 library(httr)
 library(jsonlite)
 library(htmltools)
-library(yaml)
 
-# ── Load config directly ──
-config <- yaml::read_yaml(here::here("config.yaml"))
+# ── Use params_cfg already parsed by worker.R (avoids redundant disk I/O) ──
+config <- params_cfg
 
 # ── Safely read API key ──
 api_key <- tryCatch({
@@ -23,18 +22,7 @@ if (!ai_enabled) {
 
 } else if (is.null(api_key) || api_key == "") {
 
-  # error_text <- "\u26a0 AI Generated Summary unavailable: api_key not found."
   template_text <- "Enter remarks here.."
-  # template_text <- paste(
-  #     "==OVERALL PASSED/FAILED==",
-  #   "",
-  #   "Current run achieved the expected load of **[Virtual Users]** with a throughput of **[TPS]**.",
-  #   "An error rate of **[Error Rate]** was observed during execution.",
-  #   "Response Time SLA status: **[Passed/Failed]**.",
-  #   "Compared to the previous run, performance **[improved/regressed/remained stable]**.",
-  #   "Key recommendation: **[Recommendation]**.",
-  #   sep = "\n"
-  # )
 
   htmltools::tags$div(
     style = "width: 100%; box-sizing: border-box;",
@@ -237,9 +225,7 @@ if (!ai_enabled) {
   prompt    <- build_prompt(ai_summary_data)
   ai_result <- get_ai_summary(prompt, api_key)
 
-  # ── Convert ==text== highlight syntax to styled HTML <mark> tags ──
   summary_text <- if (ai_result$error) {
-    # paste0("\u26a0 AI Summary error: ", ai_result$msg)
     template_text
   } else {
     ai_result$text

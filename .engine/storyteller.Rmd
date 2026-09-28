@@ -37,10 +37,6 @@ library(stringr)
 ```
 
 ```{r connection, include = FALSE, cache = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
-# Debug: Output runtime parameters
-# cat(sprintf("\n>>> [DEBUG] Vault Path: '%s'\n", params$db_path))
-# cat(sprintf(">>> [DEBUG] Target Tool: '%s'\n", params$tool))
-# cat(sprintf(">>> [DEBUG] Filter Parameter: '%s'\n", params$label_filter))
 
 # Establish connection to DuckDB
 con <- dbConnect(duckdb::duckdb(shared_home = FALSE), dbdir = params$db_path, read_only = TRUE)
@@ -395,13 +391,6 @@ if (!is.null(sla_file_path) && nzchar(trimws(sla_file_path)) && file.exists(here
       c()
     }
 
-    # get_rt_threshold <- function(label) {
-    #   if (label %in% names(rt_threshold_lookup)) {
-    #     unname(rt_threshold_lookup[label])
-    #   } else {
-    #     rt_default
-    #   }
-    # }
     get_rt_threshold <- function(label) {
 
       matching_prefixes <- names(rt_threshold_lookup)[

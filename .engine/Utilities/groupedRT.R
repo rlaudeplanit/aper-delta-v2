@@ -196,7 +196,7 @@ build_grouped_rt_chart <- function(
         )
       )
     
-    htmltools::tagList(
+    htmltools::tags$div(
       style = "width: 100%; margin-bottom: 40px;",
       htmltools::tags$div(
         style = "width: 100%; overflow: hidden; border: 1px solid #e3e3e3; padding: 10px;",
@@ -205,7 +205,9 @@ build_grouped_rt_chart <- function(
       render_observation_panel(
         chart_id = paste0(
           "chart_groupedRT_",
-          metric
+          metric,
+          "_",
+          gsub("[^A-Za-z0-9_]", "_", f)
         )
       )
     )

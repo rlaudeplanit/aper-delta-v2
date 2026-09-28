@@ -56,7 +56,6 @@ while ($true) {
 $rawResultsFolder = "NONE"
 $comp1       = "NONE"
 $comp2       = "NONE"
-$comp3       = "NONE"
 $toolType    = "jmeter"
 $labelFilter = "NONE"
 
@@ -123,17 +122,19 @@ if ($choice -eq "2") {
         "--opMode=menu" `
         "--active_tool=$toolType"
 
-    # --- Collect up to 3 Run IDs or Sequence Numbers ---
+    # --- Collect up to 2 Run IDs or Sequence Numbers (Baseline + Current) ---
     $runIds = @()
-    Write-Host "`nEnter up to 3 Run IDs or Sequence Numbers (#) to compare. Press ENTER on an empty line when finished." -ForegroundColor Yellow
+    Write-Host "`nEnter up to 2 Run IDs or Sequence Numbers: Baseline first, then Current." -ForegroundColor Yellow
+    Write-Host "Press ENTER on an empty line when done (at least 1 required)." -ForegroundColor DarkGray
 
-    while ($runIds.Count -lt 3) {
+    while ($runIds.Count -lt 2) {
         $currentCount = $runIds.Count + 1
-        $inputRun = (Read-Host "Enter Run ID or Sequence # $currentCount").Trim()
+        $label = if ($currentCount -eq 1) { "Baseline" } else { "Current" }
+        $inputRun = (Read-Host "Enter $label Run ID or Sequence #$currentCount").Trim()
 
         if ([string]::IsNullOrWhiteSpace($inputRun)) {
             if ($runIds.Count -ge 1) { break }
-            else { Write-Host "You must enter at least one Run ID to generate a report." -ForegroundColor Red }
+            else { Write-Host "At least one Run ID is required to generate a report." -ForegroundColor Red }
         } else {
             $runIds += $inputRun
         }
@@ -141,7 +142,6 @@ if ($choice -eq "2") {
 
     $comp1 = if ($runIds.Count -ge 1) { $runIds[0] } else { "NONE" }
     $comp2 = if ($runIds.Count -ge 2) { $runIds[1] } else { "NONE" }
-    $comp3 = if ($runIds.Count -ge 3) { $runIds[2] } else { "NONE" }
 
     Write-Host ""
     $inputFilter = (Read-Host "Enter transaction label filter pattern (e.g. TRX, TRN) or press Enter to include all").Trim()
@@ -165,7 +165,6 @@ if ($opMode -eq "register") {
         "--opMode=$opMode" `
         "--comp1=$comp1" `
         "--comp2=$comp2" `
-        "--comp3=$comp3" `
         "--active_tool=$toolType" `
         "--labelFilterParam=$labelFilter"
 }
