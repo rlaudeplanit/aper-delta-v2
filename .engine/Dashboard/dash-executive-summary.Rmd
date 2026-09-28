@@ -1216,7 +1216,7 @@ summary_html <- sprintf(
 
   <hr/>
 
-  <p>
+  <!-- KPI SUMMARY -->
 
   <div style="
     display:flex;
@@ -1224,37 +1224,84 @@ summary_html <- sprintf(
     gap:8px;
   ">
     <h3 class="section-header">
-      PASS/FAIL Summary
+      KPI Summary
     </h3>
+
     <i style="
         color:#6c757d;
         cursor:help;
         font-size:14px;
         margin-top:-2px;"
       class="fa fa-info-circle breach-tooltip"
-      title="Max Users
-    Peak concurrent virtual users executed.
+      title="
 
-    Avg. Throughput
-    Average successful transactions per second (TPS).
+KEY PERFORMANCE INDICATOR (KPI) SUMMARY
 
-    %% Error
-    Percentage of failed transactions.
+Max Users
+Peak concurrent virtual users executed during the test.
 
-    P95 Response Time
-    95%% of transactions completed within this time.
+Apps Passed TPS SLA
+Number of applications that met their throughput (TPS) SLA target.
 
-    TPS SLA Pass Rate
-    Percentage of applications meeting throughput SLA targets.
+Scenarios Passed P95 Response Time SLA
+Number of scenarios that met the configured response time SLA.
 
-    %% Error SLA Pass Rate
-    Percentage of user scenarios meeting error rate SLA targets.
+Scenarios Passed Error SLA
+Number of scenarios that met the configured error rate SLA.
 
-    RT SLA Pass Rate
-    Percentage of user scenarios meeting response time SLA targets.
-    "></i>
+--------------------------------------------------
+
+FAILURE ANALYSIS
+
+Primary Failure Drivers
+Summary of the SLA breaches that contributed to the overall test failure.
+
+Top Response Time Breaches
+Scenarios or transactions with the largest response time SLA violations.
+
+Top Error Contributors
+Transactions that generated the highest number of errors during execution.
+
+--------------------------------------------------
+
+HEALTH SUMMARY
+
+Application Health Summary
+Application-level view of performance, showing overall SLA status and key metrics for each application.
+
+Scenario Health Summary
+Scenario-level view of performance, showing SLA compliance and key metrics for each business scenario.
+
+Status
+Overall PASS when all applicable SLAs are satisfied.
+Overall FAIL when one or more SLAs are breached.
+
+Avg. Throughput
+Average successful transactions per second (TPS) achieved during the test.
+
+P95 Response Time
+95%% of completed transactions finished within this response time.
+
+Error Rate
+Percentage of failed transactions compared to total transactions executed.
+
+--------------------------------------------------
+
+CURRENT VS BASELINE COMPARISON
+
+Current
+Metrics from the latest test execution.
+
+Baseline
+Metrics from the reference test execution used for comparison.
+
+Delta
+Percentage change between the current and baseline executions.
+
+">
+    </i>
+
   </div>
-  </p>
 
   <div style="
     display:flex;
@@ -1294,7 +1341,7 @@ summary_html <- sprintf(
 
     </div>
 
-    <!-- Throughput -->
+    <!-- TPS SLA -->
 
     <div style="
         flex:1 1 0;
@@ -1315,14 +1362,6 @@ summary_html <- sprintf(
         ">
           %s of %s
         </span>
-
-        <span style="
-          font-size:22px;
-          color:%s;
-          margin-left:4px;
-        ">
-          Applications Passed
-        </span>
       </div>
 
       <div style="
@@ -1330,12 +1369,12 @@ summary_html <- sprintf(
         font-size:18px;
         color:#444;
       ">
-        Avg. Throughput (TPS)
+        Apps Passed TPS SLA
       </div>
 
     </div>
 
-    <!-- Response Time -->
+    <!-- RT SLA -->
 
     <div style="
         flex:1 1 0;
@@ -1356,14 +1395,6 @@ summary_html <- sprintf(
         ">
           %s of %s
         </span>
-
-        <span style="
-          font-size:22px;
-          color:%s;
-          margin-left:4px;
-        ">
-          Scenarios Passed
-        </span>
       </div>
 
       <div style="
@@ -1371,12 +1402,12 @@ summary_html <- sprintf(
         font-size:18px;
         color:#444;
       ">
-        %s
+        Scenarios Passed %s SLA
       </div>
 
     </div>
 
-    <!-- Error Rate -->
+    <!-- ERROR SLA -->
 
     <div style="
         flex:1 1 0;
@@ -1397,14 +1428,6 @@ summary_html <- sprintf(
         ">
           %s of %s
         </span>
-
-        <span style="
-          font-size:22px;
-          color:%s;
-          margin-left:4px;
-        ">
-          Scenarios Passed
-        </span>
       </div>
 
       <div style="
@@ -1412,38 +1435,15 @@ summary_html <- sprintf(
         font-size:18px;
         color:#444;
       ">
-        %% Error
+        Scenarios Passed Error SLA
       </div>
 
     </div>
 
-  </div>
-
-  <div style="
-    display:flex;
-    gap:14px;
-    margin-top:18px;
-    align-items:stretch;
-    ">
-    
-    %s
-    
-    %s
-    
-  </div>
-  <div style="
-    display:flex;
-    gap:14px;
-    margin-top:18px;
-    align-items:stretch;
-    ">
-    
-    %s
   </div>
 
 </div>
 ',
-
 summary_class,
 
 overall_icon,
@@ -1457,28 +1457,19 @@ format(current_users, big.mark = ","),
 
 status_colour(tp_status),
 status_colour(tp_status),
-# sprintf("%.2f TPS", current_tp),
 tp_app_passed,
 tp_app_total,
-status_colour(tp_status),
 
 status_colour(rt_status),
 status_colour(rt_status),
 scenario_passed,
 scenario_total,
-status_colour(rt_status),
 rt_title,
 
 status_colour(er_status),
 status_colour(er_status),
-# sprintf("%.2f%%", current_er),
 er_scenario_passed,
-er_scenario_total,
-status_colour(er_status),
-
-failure_card,
-breach_card,
-error_card
+er_scenario_total
 )
 
 HTML(summary_html)

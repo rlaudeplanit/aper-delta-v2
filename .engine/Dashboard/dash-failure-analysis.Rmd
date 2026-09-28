@@ -1,0 +1,291 @@
+```{r dash-failure-analysis, echo=FALSE, results='asis'}
+
+library(dplyr)
+library(htmltools)
+
+# ============================================================
+# CURRENT RUN
+# ============================================================
+
+test_meta <- raw_data %>%
+  group_by(run_id) %>%
+  summarise(
+    sequence_num = first(sequence_num),
+    .groups = "drop"
+  )
+
+current_run_id <- test_meta %>%
+  filter(sequence_num == max(sequence_num)) %>%
+  pull(run_id)
+
+# ============================================================
+# FAILURE DRIVERS
+# ============================================================
+
+failure_items <- c()
+
+# --- Throughput failures ---
+
+if (exists("failed_tp_apps") &&
+    nrow(failed_tp_apps) > 0) {
+
+  tp_details <- paste0(
+    "<ul>",
+    paste(
+      sprintf(
+        "<li><span class='executive-subtext'>%s - %.2f TPS (Target: %.2f TPS)</span></li>",
+        failed_tp_apps$app_name,
+        failed_tp_apps$throughput,
+        failed_tp_apps$target
+      ),
+      collapse = ""
+    ),
+    "</ul>"
+  )
+
+  failure_items <- c(
+    failure_items,
+    paste0(
+      sprintf(
+        "%s of %s Applications failed Throughput SLA",
+        tp_app_total - tp_app_passed,
+        tp_app_total
+      ),
+      tp_details
+    )
+  )
+}
+
+# --- RT failures ---
+
+if (exists("rt_failed_details") &&
+    nrow(rt_failed_details) > 0) {
+
+  rt_details <- paste0(
+    "<ul>",
+    paste(
+      sprintf(
+        "<li><span class='executive-subtext'>%s - %s ms (SLA: %s ms)</span></li>",
+        rt_failed_details$thread_group,
+        format(round(rt_failed_details$actual_rt), big.mark = ","),
+        format(round(rt_failed_details$threshold), big.mark = ",")
+      ),
+      collapse = ""
+    ),
+    "</ul>"
+  )
+
+  failure_items <- c(
+    failure_items,
+    paste0(
+      sprintf(
+        "%s of %s User Scenarios failed Response Time SLA",
+        scenario_failed,
+        scenario_total
+      ),
+      rt_details
+    )
+  )
+}
+
+failure_section <- ""
+
+if (length(failure_items) > 0) {
+
+  failure_section <- paste0(
+    "<div class='failure-drivers'>",
+    "<ul>",
+    paste0("<li>", failure_items, "</li>", collapse = ""),
+    "</ul>",
+    "</div>"
+  )
+}
+
+failure_card <- paste0(
+'
+<div style="
+    flex:1;
+    background:#f8f9fa;
+    border:1px solid #dee2e6;
+    border-radius:4px;
+    padding:14px;
+">
+  <h3 class="section-header">
+    Primary Failure Drivers
+  </h3>
+',
+failure_section,
+'
+</div>
+'
+)
+
+# ============================================================
+# TOP BREACHES
+# ============================================================
+
+top_breach_section <- ""
+
+if (!is.null(rt_summary) &&
+    rt_summary$failed_count > 0) {
+
+  top_breach_section <- paste0(
+    "<ul>",
+    paste(
+      sprintf(
+        "<li>%s<br/><span class='executive-subtext'>Actual: %sms | SLA: %sms | Breach: %s%%</span></li>",
+        rt_summary$top_breaches$label,
+        rt_summary$top_breaches$actual_rt,
+        rt_summary$top_breaches$threshold,
+        rt_summary$top_breaches$breach_pct
+      ),
+      collapse = ""
+    ),
+    "</ul>"
+  )
+}
+
+breach_card <- paste0(
+'
+<div style="
+    flex:1;
+    background:#f8f9fa;
+    border:1px solid #dee2e6;
+    border-radius:4px;
+    padding:14px;
+">
+
+  <h3 class="section-header">
+    Top Response Time Breaches
+  </h3>
+',
+top_breach_section,
+'
+</div>
+'
+)
+
+# ============================================================
+# ERROR CARD
+# ============================================================
+
+# Re-use your existing error_summary / error_rows logic
+
+# (Paste your existing error_card block here)
+
+# ============================================================
+# RENDER
+# ============================================================
+
+html_output <- paste0(
+'
+<div class="sub-executive-summary">
+    <div style="
+        display:flex;
+        align-items:center;
+        gap:8px;
+    ">
+        <h3 class="section-header">
+        Failure Analysis
+        </h3>
+        <i style="
+        color:#6c757d;
+        cursor:help;
+        font-size:14px;
+        margin-top:-2px;"
+      class="fa fa-info-circle breach-tooltip"
+      title="
+
+KEY PERFORMANCE INDICATOR (KPI) SUMMARY
+
+Max Users
+Peak concurrent virtual users executed during the test.
+
+Apps Passed TPS SLA
+Number of applications that met their throughput (TPS) SLA target.
+
+Scenarios Passed P95 Response Time SLA
+Number of scenarios that met the configured response time SLA.
+
+Scenarios Passed Error SLA
+Number of scenarios that met the configured error rate SLA.
+
+--------------------------------------------------
+
+FAILURE ANALYSIS
+
+Primary Failure Drivers
+Summary of the SLA breaches that contributed to the overall test failure.
+
+Top Response Time Breaches
+Scenarios or transactions with the largest response time SLA violations.
+
+Top Error Contributors
+Transactions that generated the highest number of errors during execution.
+
+--------------------------------------------------
+
+HEALTH SUMMARY
+
+Application Health Summary
+Application-level view of performance, showing overall SLA status and key metrics for each application.
+
+Scenario Health Summary
+Scenario-level view of performance, showing SLA compliance and key metrics for each business scenario.
+
+Status
+Overall PASS when all applicable SLAs are satisfied.
+Overall FAIL when one or more SLAs are breached.
+
+Avg. Throughput
+Average successful transactions per second (TPS) achieved during the test.
+
+P95 Response Time
+95%% of completed transactions finished within this response time.
+
+Error Rate
+Percentage of failed transactions compared to total transactions executed.
+
+--------------------------------------------------
+
+CURRENT VS BASELINE COMPARISON
+
+Current
+Metrics from the latest test execution.
+
+Baseline
+Metrics from the reference test execution used for comparison.
+
+Delta
+Percentage change between the current and baseline executions.
+
+">
+    </i>
+    </div>
+
+  <div style="
+      display:flex;
+      gap:14px;
+      align-items:stretch;
+  ">
+',
+failure_card,
+breach_card,
+'
+  </div>
+
+  <div style="
+      margin-top:14px;
+  ">
+',
+error_card,
+'
+  </div>
+
+</div>
+'
+)
+
+HTML(html_output)
+
+```

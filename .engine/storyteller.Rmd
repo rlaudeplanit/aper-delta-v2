@@ -551,7 +551,7 @@ is_chart_enabled <- function(chart_key) {
 
 ```
 
-# Dashboard {data-icon="fa-home"}
+# Results Summary {data-icon="fa-rectangle-list"}
 
 ## Row
 
@@ -565,7 +565,7 @@ is_chart_enabled <- function(chart_key) {
 
 ---
 
-```{r dash-scorecard-loader, child='.engine/Dashboard/dash-scorecard.Rmd'}
+```{r dash-failure-analysis-loader, child='.engine/Dashboard/dash-failure-analysis.Rmd'}
 
 ```
 
@@ -574,6 +574,14 @@ is_chart_enabled <- function(chart_key) {
 ---
 
 ```{r dash-application-health-loader, child='.engine/Dashboard/dash-application-health.Rmd'}
+
+```
+
+## Row
+
+---
+
+```{r dash-scorecard-loader, child='.engine/Dashboard/dash-scorecard.Rmd'}
 
 ```
 

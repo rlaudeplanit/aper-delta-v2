@@ -317,7 +317,7 @@ scorecard_html <- sprintf(
     gap:8px;
   ">
     <h3 class="section-header">
-      Performance Trend Summary
+      Current vs Baseline Comparison
     </h3>
       <i style="
         color:#6c757d;
@@ -325,27 +325,72 @@ scorecard_html <- sprintf(
         font-size:14px;
         margin-top:-2px;"
         class="fa fa-info-circle breach-tooltip"
-        title="Max Users
-    Peak concurrent virtual users executed.
+        title="
 
-    Avg. Throughput
-    Average successful transactions per second (TPS).
+KEY PERFORMANCE INDICATOR (KPI) SUMMARY
 
-    %% Error
-    Percentage of failed transactions.
+Max Users
+Peak concurrent virtual users executed during the test.
 
-    P95 Response Time
-    95%% of transactions completed within this time.
+Apps Passed TPS SLA
+Number of applications that met their throughput (TPS) SLA target.
 
-    TPS SLA Pass Rate
-    Percentage of applications meeting throughput SLA targets.
+Scenarios Passed P95 Response Time SLA
+Number of scenarios that met the configured response time SLA.
 
-    %% Error SLA Pass Rate
-    Percentage of user scenarios meeting error rate SLA targets.
+Scenarios Passed Error SLA
+Number of scenarios that met the configured error rate SLA.
 
-    RT SLA Pass Rate
-    Percentage of user scenarios meeting response time SLA targets.
-    "></i>
+--------------------------------------------------
+
+FAILURE ANALYSIS
+
+Primary Failure Drivers
+Summary of the SLA breaches that contributed to the overall test failure.
+
+Top Response Time Breaches
+Scenarios or transactions with the largest response time SLA violations.
+
+Top Error Contributors
+Transactions that generated the highest number of errors during execution.
+
+--------------------------------------------------
+
+HEALTH SUMMARY
+
+Application Health Summary
+Application-level view of performance, showing overall SLA status and key metrics for each application.
+
+Scenario Health Summary
+Scenario-level view of performance, showing SLA compliance and key metrics for each business scenario.
+
+Status
+Overall PASS when all applicable SLAs are satisfied.
+Overall FAIL when one or more SLAs are breached.
+
+Avg. Throughput
+Average successful transactions per second (TPS) achieved during the test.
+
+P95 Response Time
+95%% of completed transactions finished within this response time.
+
+Error Rate
+Percentage of failed transactions compared to total transactions executed.
+
+--------------------------------------------------
+
+CURRENT VS BASELINE COMPARISON
+
+Current
+Metrics from the latest test execution.
+
+Baseline
+Metrics from the reference test execution used for comparison.
+
+Delta
+Percentage change between the current and baseline executions.
+
+"></i>
   </div>
   
   <table class="scorecard-table" style="margin-top:0;">

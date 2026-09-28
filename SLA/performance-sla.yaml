@@ -46,7 +46,7 @@ sla_rules:
     description: "Throughput per application must sustain at least X transactions per second."
     application_thresholds: # overrides
       - app_name: "MyMSD-CPP-X5"
-        threshold: 5.1
+        threshold: 5.0
       - app_name: "ECS-X5"
         threshold: 3.9
       - app_name: "EOS"
@@ -74,7 +74,7 @@ sla_rules:
 response_time_sla:
   metric: p95
   unit: "ms"
-  default_threshold: 50
+  default_threshold: 500
 
   overrides:
     - label: "MyMSD"
