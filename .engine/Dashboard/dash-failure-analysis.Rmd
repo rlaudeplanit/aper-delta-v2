@@ -150,6 +150,26 @@ top_breach_section,
 # RENDER
 # ============================================================
 
+failure_tooltip_text <- "
+FAILURE ANALYSIS
+
+Primary Failure Drivers
+Summary of the SLA breaches that contributed to the overall test failure.
+
+Top Response Time Breaches
+Scenarios or transactions with the largest response time SLA violations.
+
+Error Summary
+Summary of transaction error distribution and top error contributors.
+"
+
+failure_info_icon_html <- sprintf(
+  '<i style="color:#6c757d;cursor:help;font-size:14px;margin-top:-2px;"
+    class="fa fa-info-circle breach-tooltip"
+    title="%s"></i>',
+  failure_tooltip_text
+)
+
 html_output <- paste0(
 '
 <div class="sub-executive-summary">
@@ -162,7 +182,7 @@ html_output <- paste0(
         Failure Analysis
         </h3>
 ',
-kpi_info_icon_html,
+failure_info_icon_html,
 '
     </div>
 

@@ -301,6 +301,170 @@ rt_metric_name <- toupper(
 }
 
 # ============================================================
+# SCORECARD TOOLTIP TEXT
+# ============================================================
+
+scorecard_tooltip_text <- "
+CURRENT VS BASELINE COMPARISON
+
+Current
+Metrics from the latest test execution.
+
+Baseline
+Metrics from the reference test execution used for comparison.
+
+Delta
+Percentage change between current and baseline executions. Green indicates improvement, red indicates regression.
+
+Per-Application Delta Breakdown
+Detailed per-application comparison of Throughput, Response Time, and Error Rate to identify regression drivers.
+"
+
+scorecard_info_icon_html <- sprintf(
+  '<i style="color:#6c757d;cursor:help;font-size:14px;margin-top:-2px;"
+    class="fa fa-info-circle breach-tooltip"
+    title="%s"></i>',
+  scorecard_tooltip_text
+)
+
+# ============================================================
+# PER-APPLICATION DELTA BREAKDOWN
+# ============================================================
+
+per_app_table_html <- ""
+
+if (current_run_id != baseline_run_id) {
+
+  get_app_run_summary <- function(target_run_id) {
+    raw_data %>%
+      filter(run_id == target_run_id) %>%
+      mutate(
+        is_pass = tolower(trimws(as.character(success))) %in% c("true", "yes", "1")
+      ) %>%
+      group_by(app_name) %>%
+      summarise(
+        tx_count = n(),
+        successful_tx = sum(is_pass, na.rm = TRUE),
+        duration_secs = as.numeric(
+          difftime(
+            max(timestamp, na.rm = TRUE),
+            min(timestamp, na.rm = TRUE),
+            units = "secs"
+          )
+        ),
+        throughput = ifelse(
+          duration_secs > 0,
+          round(successful_tx / duration_secs, 2),
+          0
+        ),
+        p95 = round(
+          quantile(
+            elapsed,
+            rt_percentile,
+            na.rm = TRUE
+          ),
+          0
+        ),
+        error_rate = round(
+          sum(!is_pass, na.rm = TRUE) / tx_count * 100,
+          2
+        ),
+        .groups = "drop"
+      )
+  }
+
+  current_app_stats <- get_app_run_summary(current_run_id)
+  baseline_app_stats <- get_app_run_summary(baseline_run_id)
+
+  all_apps <- sort(unique(c(current_app_stats$app_name, baseline_app_stats$app_name)))
+
+  per_app_rows <- sapply(all_apps, function(app) {
+    cur <- current_app_stats %>% filter(app_name == app)
+    base <- baseline_app_stats %>% filter(app_name == app)
+
+    cur_tp <- if (nrow(cur) > 0) cur$throughput[1] else NA
+    base_tp <- if (nrow(base) > 0) base$throughput[1] else NA
+    delta_tp <- delta_text(cur_tp, base_tp, lower_is_better = FALSE)
+
+    cur_rt <- if (nrow(cur) > 0) cur$p95[1] else NA
+    base_rt <- if (nrow(base) > 0) base$p95[1] else NA
+    delta_rt <- delta_text(cur_rt, base_rt, lower_is_better = TRUE)
+
+    cur_er <- if (nrow(cur) > 0) cur$error_rate[1] else NA
+    base_er <- if (nrow(base) > 0) base$error_rate[1] else NA
+    delta_er <- delta_text(cur_er, base_er, lower_is_better = TRUE)
+
+    cur_tp_str <- if (!is.na(cur_tp)) sprintf("%.2f TPS", cur_tp) else "—"
+    base_tp_str <- if (!is.na(base_tp)) sprintf("%.2f TPS", base_tp) else "—"
+
+    cur_rt_str <- if (!is.na(cur_rt)) sprintf("%s ms", format(round(cur_rt), big.mark = ",")) else "—"
+    base_rt_str <- if (!is.na(base_rt)) sprintf("%s ms", format(round(base_rt), big.mark = ",")) else "—"
+
+    cur_er_str <- if (!is.na(cur_er)) sprintf("%.2f%%", cur_er) else "—"
+    base_er_str <- if (!is.na(base_er)) sprintf("%.2f%%", base_er) else "—"
+
+    sprintf(
+      "<tr>
+        <td style='font-weight:600;'>%s</td>
+        <td class='numeric-cell'>%s</td>
+        <td class='numeric-cell'>%s</td>
+        <td class='numeric-cell'>%s</td>
+        <td class='numeric-cell'>%s</td>
+        <td class='numeric-cell'>%s</td>
+        <td class='numeric-cell'>%s</td>
+        <td class='numeric-cell'>%s</td>
+        <td class='numeric-cell'>%s</td>
+        <td class='numeric-cell'>%s</td>
+      </tr>",
+      app,
+      cur_tp_str, base_tp_str, delta_tp,
+      cur_rt_str, base_rt_str, delta_rt,
+      cur_er_str, base_er_str, delta_er
+    )
+  })
+
+  per_app_table_html <- sprintf(
+    '
+    <details style="margin-top:16px; background:#ffffff; border:1px solid #dee2e6; border-radius:6px; padding:12px 16px;">
+      <summary style="font-weight:600; cursor:pointer; color:#1f2937; font-size:14px; outline:none;">
+        <span style="color:#2563eb;">▼</span> Per-Application Delta Breakdown
+        <span style="font-size:11px; font-weight:normal; color:#6b7280; margin-left:6px;">(Click to expand/collapse)</span>
+      </summary>
+      <div style="margin-top:12px; overflow-x:auto;">
+        <table class="scorecard-table" style="margin-top:0;">
+          <thead>
+            <tr>
+              <th rowspan="2" style="vertical-align:bottom;">Application</th>
+              <th colspan="3" style="text-align:center; border-bottom:1px solid rgba(255,255,255,0.2);">Throughput</th>
+              <th colspan="3" style="text-align:center; border-bottom:1px solid rgba(255,255,255,0.2);">%s Response Time</th>
+              <th colspan="3" style="text-align:center; border-bottom:1px solid rgba(255,255,255,0.2);">Error Rate</th>
+            </tr>
+            <tr>
+              <th class="numeric-header">Current</th>
+              <th class="numeric-header">Baseline</th>
+              <th class="numeric-header">Delta</th>
+              <th class="numeric-header">Current</th>
+              <th class="numeric-header">Baseline</th>
+              <th class="numeric-header">Delta</th>
+              <th class="numeric-header">Current</th>
+              <th class="numeric-header">Baseline</th>
+              <th class="numeric-header">Delta</th>
+            </tr>
+          </thead>
+          <tbody>
+            %s
+          </tbody>
+        </table>
+      </div>
+    </details>
+    ',
+    rt_metric_name,
+    paste(per_app_rows, collapse = "\n")
+  )
+
+}
+
+# ============================================================
 # SCORECARD HTML
 # ============================================================
 
@@ -336,7 +500,7 @@ scorecard_html <- sprintf(
   </tr>
 
   <tr>
-  <td>Avg. Throughput</td>
+  <td>Total Aggregate Throughput</td>
   <td class=\"numeric-cell\">%s TPS</td>
   <td class=\"numeric-cell\">%s TPS</td>
   <td class=\"numeric-cell\">%s</td>
@@ -379,11 +543,13 @@ scorecard_html <- sprintf(
 
   </table>
 
+  %s
+
 </div>
 ',
 
-# KPI icon
-kpi_info_icon_html,
+# Section icon
+scorecard_info_icon_html,
 
 # Users
 format(current$users[1], big.mark = ","),
@@ -449,7 +615,10 @@ sprintf("%.2f", baseline_rt_pass_rate),
 delta_text(
   current_rt_pass_rate,
   baseline_rt_pass_rate
-)
+),
+
+# Collapsible Per-Application Breakdown Table
+per_app_table_html
 
 )
 

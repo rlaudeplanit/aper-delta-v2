@@ -5,6 +5,21 @@
 
 rt_summary <- get_run_rt_sla(current_run_id)
 
+app_rt_percentile <- 0.95
+
+if (
+  exists("rt_sla_config") &&
+  !is.null(rt_sla_config$metric)
+) {
+  app_rt_percentile <- switch(
+    tolower(rt_sla_config$metric),
+    "p90" = 0.90,
+    "p95" = 0.95,
+    "p99" = 0.99,
+    0.95
+  )
+}
+
 app_summary <- raw_data %>%
   filter(run_id == current_run_id) %>%
   mutate(
@@ -49,7 +64,7 @@ app_summary <- raw_data %>%
     p95 = round(
       quantile(
         elapsed,
-        0.95,
+        app_rt_percentile,
         na.rm = TRUE
       ),
       0
@@ -139,6 +154,88 @@ app_rt_breach_summary <- if (!is.null(rt_summary) && !is.null(rt_summary$all_lab
     worst_sla    = numeric()
   )
 }
+
+# ============================================================
+# SCENARIO LEVEL DETAILS (FOR MODAL DRILLDOWN)
+# ============================================================
+
+scenario_health_df <- raw_data %>%
+  filter(run_id == current_run_id) %>%
+  mutate(
+    is_pass = tolower(trimws(as.character(success))) %in%
+      c("true", "yes", "1")
+  ) %>%
+  group_by(app_name, thread_group) %>%
+  summarise(
+    requests = n(),
+    errors = sum(!is_pass, na.rm = TRUE),
+    error_rate = round(errors / requests * 100, 2),
+    duration_secs = as.numeric(
+      difftime(
+        max(timestamp, na.rm = TRUE),
+        min(timestamp, na.rm = TRUE),
+        units = "secs"
+      )
+    ),
+    throughput = ifelse(
+      duration_secs > 0,
+      round(sum(is_pass, na.rm = TRUE) / duration_secs, 2),
+      0
+    ),
+    p95 = round(
+      quantile(
+        elapsed,
+        app_rt_percentile,
+        na.rm = TRUE
+      ),
+      0
+    ),
+    .groups = "drop"
+  )
+
+if (!is.null(rt_summary) && !is.null(rt_summary$all_labels)) {
+  scenario_rt_summary <- rt_summary$all_labels %>%
+    left_join(
+      raw_data %>%
+        filter(run_id == current_run_id) %>%
+        distinct(label, thread_group, app_name),
+      by = "label"
+    ) %>%
+    group_by(app_name, thread_group) %>%
+    summarise(
+      total_labels = n(),
+      passed_labels = sum(passed, na.rm = TRUE),
+      failed_labels = sum(!passed, na.rm = TRUE),
+      scenario_rt_passed = all(passed),
+      worst_label = if (any(!passed)) label[which.max(breach_pct)] else "-",
+      worst_actual = if (any(!passed)) max(actual_rt, na.rm = TRUE) else 0,
+      worst_sla = if (any(!passed)) threshold[which.max(breach_pct)] else 0,
+      .groups = "drop"
+    )
+
+  scenario_health_df <- scenario_health_df %>%
+    left_join(scenario_rt_summary, by = c("app_name", "thread_group"))
+} else {
+  scenario_health_df <- scenario_health_df %>%
+    mutate(
+      total_labels = NA_integer_,
+      passed_labels = NA_integer_,
+      failed_labels = 0,
+      scenario_rt_passed = TRUE,
+      worst_label = "-",
+      worst_actual = 0,
+      worst_sla = 0
+    )
+}
+
+scenario_health_df <- scenario_health_df %>%
+  rowwise() %>%
+  mutate(
+    error_target = get_app_error_threshold(app_name),
+    error_passed = error_rate <= error_target,
+    scenario_passed = isTRUE(scenario_rt_passed) && isTRUE(error_passed)
+  ) %>%
+  ungroup()
 
 # ============================================================
 # APPLICATION TPS SLA
@@ -485,76 +582,8 @@ app_health$scenario_html <- mapply(
 )
 
 # ============================================================
-# HTML ROWS
+# COLUMN TITLE
 # ============================================================
-
-rows_html <- paste(
-  apply(
-    app_health,
-    1,
-    function(r) {
-
-      sprintf(
-        "
-        <tr>
-
-          <td>%s</td>
-
-          <td>%s</td>
-
-          <td class='numeric-cell'>%s</td>
-
-          <td class='numeric-cell'>%s</td>
-
-          <td class='numeric-cell'>%s</td>
-
-        </tr>
-        ",
-
-        r["app_name"],
-
-        r["status_html"],
-
-        metric_badge(
-          sprintf(
-            "%.2f TPS",
-            as.numeric(r["throughput"])
-          ),
-          as.logical(
-            r["throughput_pass"]
-          )
-        ),
-
-        metric_badge(
-          sprintf(
-            "%s ms",
-            format(
-                round(as.numeric(r["p95"])),
-                big.mark = ","
-            )
-          ),
-          as.numeric(
-            r["failed_scenarios"]
-          ) == 0
-        ),
-
-        metric_badge(
-            sprintf(
-                "%.2f",
-                as.numeric(r["error_rate"])
-            ),
-            as.logical(
-                r["error_pass"]
-            ),
-            "%"
-        )
-
-      )
-
-    }
-  ),
-  collapse = ""
-)
 
 rt_column_title <- "Response Time"
 
@@ -569,6 +598,336 @@ if (
   )
 
 }
+
+# ============================================================
+# RENDER SCENARIO TABLE HELPER
+# ============================================================
+
+render_scenario_table <- function(df, show_app_col = FALSE) {
+  if (nrow(df) == 0) {
+    return("<p style='color:#6c757d; padding:12px 0;'>No scenario details available.</p>")
+  }
+
+  rows <- apply(df, 1, function(row) {
+    scen_name <- row["thread_group"]
+    app <- row["app_name"]
+    is_scen_pass <- as.logical(row["scenario_passed"])
+    scen_status_badge <- if (is_scen_pass) {
+      "<span class='status-pass'>PASS</span>"
+    } else {
+      "<span class='status-fail'>FAIL</span>"
+    }
+
+    req_fmt <- format(as.numeric(row["requests"]), big.mark = ",")
+    tps_fmt <- sprintf("%.2f TPS", as.numeric(row["throughput"]))
+    p95_val <- as.numeric(row["p95"])
+    rt_met <- as.logical(row["scenario_rt_passed"])
+    p95_badge <- metric_badge(sprintf("%s ms", format(round(p95_val), big.mark = ",")), rt_met)
+
+    tot_lbl <- as.numeric(row["total_labels"])
+    pass_lbl <- as.numeric(row["passed_labels"])
+    lbl_text <- if (!is.na(tot_lbl) && tot_lbl > 0) {
+      lbl_badge <- metric_badge(sprintf("%d of %d", pass_lbl, tot_lbl), rt_met)
+      if (!rt_met && !is.na(row["worst_label"]) && row["worst_label"] != "-") {
+        sprintf("%s <i class='fa fa-info-circle breach-tooltip' title='Worst Breach:\n%s\nActual: %s ms | SLA: %s ms'></i>",
+                lbl_badge,
+                row["worst_label"],
+                format(round(as.numeric(row["worst_actual"])), big.mark = ","),
+                format(round(as.numeric(row["worst_sla"])), big.mark = ","))
+      } else {
+        lbl_badge
+      }
+    } else {
+      "<span class='status-na'>N/A</span>"
+    }
+
+    err_rate <- as.numeric(row["error_rate"])
+    err_met <- as.logical(row["error_passed"])
+    err_badge <- metric_badge(sprintf("%.2f%%", err_rate), err_met)
+
+    app_td <- if (show_app_col) sprintf("<td><strong>%s</strong></td>", app) else ""
+
+    sprintf(
+      "<tr>%s<td style='font-family:monospace;font-size:12px;font-weight:600;'>%s</td><td style='text-align:center;'>%s</td><td class='numeric-cell'>%s</td><td class='numeric-cell'>%s</td><td class='numeric-cell'>%s</td><td style='text-align:center;'>%s</td><td class='numeric-cell'>%s</td></tr>",
+      app_td, scen_name, scen_status_badge, req_fmt, tps_fmt, p95_badge, lbl_text, err_badge
+    )
+  })
+
+  app_th <- if (show_app_col) "<th>Application</th>" else ""
+
+  sprintf(
+    '<table class="scorecard-table" style="margin-top:4px;">
+      <thead>
+        <tr>
+          %s
+          <th>Scenario (Thread Group)</th>
+          <th style="text-align:center;">Status</th>
+          <th class="numeric-header">Requests</th>
+          <th class="numeric-header">Avg. Throughput</th>
+          <th class="numeric-header">%s</th>
+          <th style="text-align:center;">Labels Met RT SLA</th>
+          <th class="numeric-header">Error Rate</th>
+        </tr>
+      </thead>
+      <tbody>
+        %s
+      </tbody>
+    </table>',
+    app_th,
+    rt_column_title,
+    paste(rows, collapse = "\n")
+  )
+}
+
+# ============================================================
+# HTML ROWS
+# ============================================================
+
+rows_html <- paste(
+  apply(
+    app_health,
+    1,
+    function(r) {
+      app_id_safe <- gsub("[^A-Za-z0-9_]", "_", r["app_name"])
+      failed_scen_cnt <- as.numeric(r["failed_scenarios"])
+      p95_val <- as.numeric(r["p95"])
+      p95_badge <- metric_badge(
+        sprintf(
+          "%s ms",
+          format(
+            round(p95_val),
+            big.mark = ","
+          )
+        ),
+        is.na(failed_scen_cnt) || failed_scen_cnt == 0
+      )
+
+      breach_subtext <- if (!is.na(failed_scen_cnt) && failed_scen_cnt > 0) {
+        sprintf(
+          "<span class='executive-subtext' style='display:block;padding-left:0;font-size:11px;color:#dc3545;'>%d scenario breach%s</span>",
+          failed_scen_cnt,
+          if (failed_scen_cnt > 1) "es" else ""
+        )
+      } else {
+        ""
+      }
+
+      scen_pass_cnt <- as.numeric(r["passed_scenarios"])
+      scen_tot_cnt <- as.numeric(r["total_scenarios"])
+      scen_badge <- if (!is.na(scen_tot_cnt) && scen_tot_cnt > 0) {
+        scen_all_pass <- is.na(failed_scen_cnt) || failed_scen_cnt == 0
+        sprintf(
+          "<button type='button' onclick=\"openScenarioModal('%s')\" title='Click to inspect scenario details' style='cursor:pointer; background:#f8f9fa; border:1px solid #dee2e6; border-radius:4px; padding:3px 8px; font-size:11px; font-weight:600;'>%s 🔍</button>",
+          app_id_safe,
+          metric_badge(sprintf("%d of %d", scen_pass_cnt, scen_tot_cnt), scen_all_pass)
+        )
+      } else {
+        "<span class='status-na'>N/A</span>"
+      }
+
+      sprintf(
+        "
+        <tr style='cursor:pointer;' onclick=\"if(!event.target.closest('button, i, a')) openScenarioModal('%s')\" title='Click to inspect %s scenario details'>
+
+          <td style='font-weight:600;'>%s</td>
+
+          <td>%s</td>
+
+          <td class='numeric-cell'>%s</td>
+
+          <td class='numeric-cell'>%s</td>
+
+          <td class='numeric-cell'>%s%s</td>
+
+          <td class='numeric-cell'>%s</td>
+
+          <td style='text-align:center;'>%s</td>
+
+        </tr>
+        ",
+
+        app_id_safe,
+        r["app_name"],
+
+        r["app_name"],
+
+        r["status_html"],
+
+        format(as.numeric(r["transactions"]), big.mark = ","),
+
+        metric_badge(
+          sprintf(
+            "%.2f TPS",
+            as.numeric(r["throughput"])
+          ),
+          as.logical(
+            r["throughput_pass"]
+          )
+        ),
+
+        p95_badge,
+        breach_subtext,
+
+        metric_badge(
+          sprintf(
+            "%.2f",
+            as.numeric(r["error_rate"])
+          ),
+          as.logical(
+            r["error_pass"]
+          ),
+          "%"
+        ),
+
+        scen_badge
+
+      )
+
+    }
+  ),
+  collapse = ""
+)
+
+# ============================================================
+# TOOLTIP & MODAL POPUP
+# ============================================================
+
+health_tooltip_text <- "
+HEALTH SUMMARY
+
+Application Health
+Application-level view of performance, showing overall SLA status and key metrics for each application.
+
+Requests
+Total transaction requests executed during the test run.
+
+Avg. Throughput
+Average successful transactions per second (TPS) achieved during the test.
+
+Response Time
+Configured percentile response time (e.g. P90/P95). Shows scenario breach count if any failed.
+
+Error Rate
+Percentage of failed transactions compared to total transactions executed.
+
+Scenarios Met RT SLA
+Count of user scenarios that satisfied all transaction response time SLAs. Click on any row or button to view detailed per-scenario metrics.
+"
+
+health_info_icon_html <- sprintf(
+  '<i style="color:#6c757d;cursor:help;font-size:14px;margin-top:-2px;"
+    class="fa fa-info-circle breach-tooltip"
+    title="%s"></i>',
+  health_tooltip_text
+)
+
+modal_tabs_html <- sprintf(
+  '<button type="button" class="scenario-modal-tab-btn" data-app-id="ALL" onclick="openScenarioModal(\'ALL\')" style="background:#2563eb; color:#ffffff; border:1px solid #2563eb; border-radius:4px; padding:4px 12px; font-size:12px; font-weight:600; cursor:pointer;">All Applications</button>%s',
+  paste(sapply(unique(app_health$app_name), function(app) {
+    safe_id <- gsub("[^A-Za-z0-9_]", "_", app)
+    sprintf('<button type="button" class="scenario-modal-tab-btn" data-app-id="%s" onclick="openScenarioModal(\'%s\')" style="background:#ffffff; color:#374151; border:1px solid #d1d5db; border-radius:4px; padding:4px 12px; font-size:12px; font-weight:600; cursor:pointer;">%s</button>', safe_id, safe_id, app)
+  }), collapse = "")
+)
+
+hidden_tables_html <- paste(
+  c(
+    sprintf('<div id="scenario-data-ALL" style="display:none;">%s</div>', render_scenario_table(scenario_health_df, show_app_col = TRUE)),
+    sapply(unique(app_health$app_name), function(app) {
+      safe_id <- gsub("[^A-Za-z0-9_]", "_", app)
+      sub_df <- scenario_health_df %>% filter(app_name == app)
+      sprintf('<div id="scenario-data-%s" style="display:none;">%s</div>', safe_id, render_scenario_table(sub_df, show_app_col = FALSE))
+    })
+  ),
+  collapse = "\n"
+)
+
+modal_html <- paste0(
+  hidden_tables_html,
+  '
+<div id="scenario-modal-backdrop" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.55); z-index:999999; justify-content:center; align-items:center; backdrop-filter:blur(2px);" onclick="if(event.target===this) closeScenarioModal();">
+  <div style="background:#ffffff; border-radius:8px; width:92%; max-width:1050px; max-height:85vh; display:flex; flex-direction:column; box-shadow:0 12px 35px rgba(0,0,0,0.3); border:1px solid #dee2e6; overflow:hidden;">
+
+    <!-- Modal Header -->
+    <div style="display:flex; justify-content:space-between; align-items:center; padding:12px 20px; background:#111827; color:#ffffff; border-bottom:1px solid #374151;">
+      <div style="display:flex; align-items:center; gap:10px;">
+        <span style="font-size:18px;">🧪</span>
+        <h4 id="scenario-modal-title" style="margin:0; font-size:15px; font-weight:600; color:#ffffff;">Scenario Health Details</h4>
+      </div>
+      <button type="button" onclick="closeScenarioModal();" style="background:transparent; border:none; color:#ffffff; font-size:24px; cursor:pointer; line-height:1; padding:0 6px;" title="Close modal">&times;</button>
+    </div>
+
+    <!-- Modal Filter Tabs -->
+    <div style="padding:8px 16px; background:#f8f9fa; border-bottom:1px solid #dee2e6; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+      <span style="font-size:11px; font-weight:600; color:#6b7280; text-transform:uppercase; margin-right:4px;">View:</span>
+  ',
+  modal_tabs_html,
+  '
+    </div>
+
+    <!-- Modal Body -->
+    <div id="scenario-modal-body" style="padding:16px 20px; overflow-y:auto; flex:1;">
+    </div>
+
+    <!-- Modal Footer -->
+    <div style="padding:10px 20px; background:#f8f9fa; border-top:1px solid #dee2e6; display:flex; justify-content:space-between; align-items:center;">
+      <small style="color:#6c757d; font-size:11px;">💡 Tip: Press <kbd style="background:#e5e7eb; padding:1px 5px; border-radius:3px;">ESC</kbd> or click outside to close</small>
+      <button type="button" onclick="closeScenarioModal();" style="background:#374151; color:#ffffff; border:none; border-radius:4px; padding:6px 14px; font-size:12px; cursor:pointer; font-weight:600;">Close</button>
+    </div>
+
+  </div>
+</div>
+
+<script>
+(function() {
+  window.openScenarioModal = function(appId) {
+    var modal = document.getElementById("scenario-modal-backdrop");
+    var body = document.getElementById("scenario-modal-body");
+    var title = document.getElementById("scenario-modal-title");
+    if (!modal || !body) return;
+
+    var targetDiv = document.getElementById("scenario-data-" + appId);
+    if (targetDiv) {
+      body.innerHTML = targetDiv.innerHTML;
+    } else {
+      var allDiv = document.getElementById("scenario-data-ALL");
+      body.innerHTML = allDiv ? allDiv.innerHTML : "<p>No scenario data available.</p>";
+    }
+
+    document.querySelectorAll(".scenario-modal-tab-btn").forEach(function(btn) {
+      if (btn.getAttribute("data-app-id") === appId) {
+        btn.style.background = "#2563eb";
+        btn.style.color = "#ffffff";
+        btn.style.borderColor = "#2563eb";
+      } else {
+        btn.style.background = "#ffffff";
+        btn.style.color = "#374151";
+        btn.style.borderColor = "#d1d5db";
+      }
+    });
+
+    if (title) {
+      var activeBtn = document.querySelector(".scenario-modal-tab-btn[data-app-id=\'" + appId + "\']");
+      var label = activeBtn ? activeBtn.innerText : appId;
+      title.innerText = "Scenario Health Details - " + label;
+    }
+
+    modal.style.display = "flex";
+  };
+
+  window.closeScenarioModal = function() {
+    var modal = document.getElementById("scenario-modal-backdrop");
+    if (modal) modal.style.display = "none";
+  };
+
+  document.addEventListener("keydown", function(e) {
+    if (e.key === "Escape") {
+      closeScenarioModal();
+    }
+  });
+})();
+</script>
+'
+)
 
 html_output <- sprintf(
 '
@@ -591,21 +950,26 @@ html_output <- sprintf(
 <tr>
   <th>Application</th>
   <th>Status</th>
+  <th class="numeric-header">Requests</th>
   <th class="numeric-header">Avg. Throughput</th>
   <th class="numeric-header">%s</th>
   <th class="numeric-header">Error Rate</th>
+  <th style="text-align:center;">Scenarios Met RT SLA</th>
 </tr>
 
 %s
 
 </table>
 
+%s
+
 </div>
 ',
-kpi_info_icon_html,
+health_info_icon_html,
 health_summary_html,
 rt_column_title,
-rows_html
+rows_html,
+modal_html
 )
 
 HTML(html_output)

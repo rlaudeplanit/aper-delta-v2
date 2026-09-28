@@ -62,7 +62,7 @@ sla_rules:
 # ==============================================================================
 # RESPONSE TIME SLA — per-transaction (label) evaluation
 # ------------------------------------------------------------------------------
-# metric: which percentile to evaluate — "p90" or "p95"
+# metric: which percentile to evaluate — "p90" or "p95" or "avg"
 # default_threshold: applied to ANY transaction not listed in "overrides"
 # tolerance_pct: allows actual value to exceed threshold by this % and still pass
 #                (0 = strict, no tolerance)

@@ -1077,9 +1077,8 @@ overall_icon <- if (isTRUE(overall_status)) {
 }
 
 # ============================================================
-# SHARED KPI TOOLTIP TEXT
-# Defined once here (first child to run) and re-used by
-# dash-failure-analysis, dash-application-health, dash-scorecard.
+# KPI SUMMARY TOOLTIP TEXT
+# Scoped to KPI Summary cards.
 # ============================================================
 
 kpi_tooltip_text <- "
@@ -1091,60 +1090,11 @@ Peak concurrent virtual users executed during the test.
 Apps Passed TPS SLA
 Number of applications that met their throughput (TPS) SLA target.
 
-Scenarios Passed P95 Response Time SLA
+Scenarios Passed Response Time SLA
 Number of scenarios that met the configured response time SLA.
 
 Scenarios Passed Error SLA
 Number of scenarios that met the configured error rate SLA.
-
---------------------------------------------------
-
-FAILURE ANALYSIS
-
-Primary Failure Drivers
-Summary of the SLA breaches that contributed to the overall test failure.
-
-Top Response Time Breaches
-Scenarios or transactions with the largest response time SLA violations.
-
-Top Error Contributors
-Transactions that generated the highest number of errors during execution.
-
---------------------------------------------------
-
-HEALTH SUMMARY
-
-Application Health Summary
-Application-level view of performance, showing overall SLA status and key metrics for each application.
-
-Scenario Health Summary
-Scenario-level view of performance, showing SLA compliance and key metrics for each business scenario.
-
-Status
-Overall PASS when all applicable SLAs are satisfied.
-Overall FAIL when one or more SLAs are breached.
-
-Avg. Throughput
-Average successful transactions per second (TPS) achieved during the test.
-
-P95 Response Time
-95%% of completed transactions finished within this response time.
-
-Error Rate
-Percentage of failed transactions compared to total transactions executed.
-
---------------------------------------------------
-
-CURRENT VS BASELINE COMPARISON
-
-Current
-Metrics from the latest test execution.
-
-Baseline
-Metrics from the reference test execution used for comparison.
-
-Delta
-Percentage change between the current and baseline executions.
 "
 
 # ============================================================
@@ -1294,6 +1244,8 @@ kpi_info_icon_html <- sprintf(
   kpi_tooltip_text
 )
 
+vu_card_colour <- if (identical(vu_status, "FAIL")) "#dc3545" else "#2563eb"
+
 summary_html <- sprintf(
 '
 <div class="%s">
@@ -1322,15 +1274,15 @@ summary_html <- sprintf(
   <div style="
     display:flex;
     gap:14px;
-    flex-wrap:nowrap;
+    flex-wrap:wrap;
     margin-top:10px;
   ">
 
     <!-- Max Users -->
 
     <div style="
-        flex:1 1 0;
-        min-width:0;
+        flex:1 1 200px;
+        min-width:200px;
         background:#f8f9fa;
         border:1px solid #dee2e6;
         border-left:5px solid %s;
@@ -1360,8 +1312,8 @@ summary_html <- sprintf(
     <!-- TPS SLA -->
 
     <div style="
-        flex:1 1 0;
-        min-width:0;
+        flex:1 1 200px;
+        min-width:200px;
         background:#f8f9fa;
         border:1px solid #dee2e6;
         border-left:5px solid %s;
@@ -1393,8 +1345,8 @@ summary_html <- sprintf(
     <!-- RT SLA -->
 
     <div style="
-        flex:1 1 0;
-        min-width:0;
+        flex:1 1 200px;
+        min-width:200px;
         background:#f8f9fa;
         border:1px solid #dee2e6;
         border-left:5px solid %s;
@@ -1426,8 +1378,8 @@ summary_html <- sprintf(
     <!-- ERROR SLA -->
 
     <div style="
-        flex:1 1 0;
-        min-width:0;
+        flex:1 1 200px;
+        min-width:200px;
         background:#f8f9fa;
         border:1px solid #dee2e6;
         border-left:5px solid %s;
@@ -1469,8 +1421,8 @@ header_cards,
 
 kpi_info_icon_html,
 
-status_colour(vu_status),
-status_colour(vu_status),
+vu_card_colour,
+vu_card_colour,
 format(current_users, big.mark = ","),
 
 status_colour(tp_status),
