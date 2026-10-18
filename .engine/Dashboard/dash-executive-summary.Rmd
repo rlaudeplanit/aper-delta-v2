@@ -1,1446 +1,1653 @@
 ```{r dash-executive-summary, echo=FALSE, results='asis'}
+source(here::here(".engine/Utilities", "utils.R"))
+library(httr)
+library(jsonlite)
+library(htmltools)
+
 # ============================================================
-# RUN METADATA
+# 1. IDENTIFY CURRENT & BASELINE RUNS FROM SQL SUMMARY
 # ============================================================
-
-test_meta <- raw_data %>%
-  group_by(run_id) %>%
-  summarise(
-    sequence_num = first(sequence_num),
-    project_name = first(project_name),
-    test_name    = first(test_name),
-    .groups = "drop"
-  )
-
-current_run <- test_meta %>%
-  filter(sequence_num == max(sequence_num))
-
-baseline_run <- test_meta %>%
-  filter(sequence_num == min(sequence_num))
+current_run  <- db_run_summary %>% filter(sequence_num == max(sequence_num)) %>% slice(1)
+baseline_run <- db_run_summary %>% filter(sequence_num == min(sequence_num)) %>% slice(1)
 
 current_run_id  <- current_run$run_id[1]
 baseline_run_id <- baseline_run$run_id[1]
+has_baseline    <- (current_run_id != baseline_run_id)
 
 project_name  <- current_run$project_name[1]
 scenario_name <- current_run$test_name[1]
 
-applications <- raw_data %>%
+applications <- db_app_summary %>%
   filter(run_id == current_run_id) %>%
-  distinct(app_name) %>%
   arrange(app_name) %>%
   pull(app_name)
+application_list <- paste(applications, collapse = ", ")
 
-application_list <- paste(
-  applications,
-  collapse = ", "
-)
+current_duration  <- paste0(current_run$duration_mins[1], " mins")
+baseline_duration <- paste0(baseline_run$duration_mins[1], " mins")
 
-error_summary <- raw_data %>%
-  filter(run_id == current_run_id) %>%
-  mutate(
-    is_pass = tolower(trimws(as.character(success))) %in%
-      c("true", "yes", "1")
-  ) %>%
-  group_by(
-    app_name,
-    label
-  ) %>%
-  summarise(
-    total_transactions = n(),
-    errors = sum(!is_pass, na.rm = TRUE),
-    error_rate = round(
-      errors / total_transactions * 100,
-      2
-    ),
-    .groups = "drop"
-  ) %>%
-  filter(errors > 0) %>%
-  arrange(desc(errors))
+current_start_fmt  <- format(current_run$start_time[1], "%d %b %Y, %I:%M %p")
+current_end_fmt    <- format(current_run$end_time[1], "%I:%M %p")
+baseline_start_fmt <- format(baseline_run$start_time[1], "%d %b %Y, %I:%M %p")
+baseline_end_fmt   <- format(baseline_run$end_time[1], "%I:%M %p")
+
+rt_metric_name   <- toupper(rt_metric)
+rt_column_title  <- paste(rt_metric_name, "Response Time")
 
 # ============================================================
-# BASIC SLA STATUS + ACTUAL VS TARGET
+# 2. HELPER FUNCTIONS FOR DELTAS & BADGES
 # ============================================================
+status_colour <- function(status) {
+  if (identical(status, "PASS")) return("#16A34A")
+  if (identical(status, "FAIL")) return("#DC2626")
+  "#64748B"
+}
 
-current_key <- as.character(current_run_id)
+metric_badge <- function(value, passed, suffix = "") {
+  sprintf(
+    "<span class='%s'>%s%s</span>",
+    ifelse(isTRUE(passed), "status-pass", "status-fail"),
+    value,
+    suffix
+  )
+}
 
-vu_status <- "N/A"
-tp_status <- "N/A"
-er_status <- "N/A"
-
-vu_actual <- "-"
-vu_target <- "-"
-
-tp_actual <- "-"
-tp_target <- "-"
-
-er_actual <- "-"
-er_target <- "-"
-
-if (!is.null(sla_results[[current_key]])) {
-
-  run_rules <- sla_results[[current_key]]$rules
-
-  get_rule <- function(metric_name) {
-
-    rule <- Filter(
-      function(x) identical(x$metric, metric_name),
-      run_rules
-    )
-
-    if (length(rule) == 0) {
-      return(NULL)
-    }
-
-    rule[[1]]
+inline_delta_badge <- function(current_val, baseline_val, lower_is_better = FALSE) {
+  if (!has_baseline || is.na(current_val) || is.na(baseline_val)) return("")
+  if (baseline_val == 0) {
+    if (current_val == 0) return("<span class='hd-delta-inline hd-delta-neutral'>▬ 0.0%</span>")
+    cls <- if (lower_is_better) "hd-delta-fail" else "hd-delta-pass"
+    return(sprintf("<span class='hd-delta-inline %s'>▲ New</span>", cls))
   }
-
-  # ============================================================
-  # Virtual Users
-  # ============================================================
-
-  vu_rule <- get_rule("total_users")
-
-  if (!is.null(vu_rule)) {
-
-    vu_status <- ifelse(
-      isTRUE(vu_rule$passed),
-      "PASS",
-      "FAIL"
-    )
-
-    vu_actual <- format(
-      round(vu_rule$actual, 0),
-      big.mark = ","
-    )
-
-    vu_target <- paste0(
-      vu_rule$operator,
-      " ",
-      vu_rule$threshold
-    )
+  delta <- round(((current_val - baseline_val) / baseline_val) * 100, 1)
+  if (delta == 0) {
+    return("<span class='hd-delta-inline hd-delta-neutral'>▬ 0.0%</span>")
   }
+  is_good <- if (lower_is_better) (delta < 0) else (delta > 0)
+  cls     <- if (is_good) "hd-delta-pass" else "hd-delta-fail"
+  arrow   <- if (delta > 0) "▲" else "▼"
+  sign_ch <- if (delta > 0) "+" else "-"
+  sprintf("<span class='hd-delta-inline %s'>%s %s%.1f%%</span>", cls, arrow, sign_ch, abs(delta))
+}
+
+delta_text <- function(current_val, baseline_val, lower_is_better = FALSE) {
+  if (is.na(current_val) || is.na(baseline_val)) return("—")
+  if (baseline_val == 0) {
+    if (current_val == 0) return("<span class='status-na'>▬ 0%</span>")
+    return("<span class='status-fail'>▲ Increase</span>")
+  }
+  delta <- round(((current_val - baseline_val) / baseline_val) * 100, 1)
+  if (delta == 0) return("<span class='status-na'>▬ 0%</span>")
+  is_good <- if (lower_is_better) (delta < 0) else (delta > 0)
+  cls     <- if (is_good) "status-pass" else "status-fail"
+  arrow   <- if (delta > 0) "▲" else "▼"
+  sign_ch <- if (delta > 0) "+" else "-"
+  sprintf("<span class='%s'>%s %s%.1f%%</span>", cls, arrow, sign_ch, abs(delta))
+}
+
+safe_dom_id <- function(x) {
+  gsub("[^A-Za-z0-9_]", "_", as.character(x))
 }
 
 # ============================================================
-# RESPONSE TIME SLA (USER SCENARIO LEVEL)
+# 3. EVALUATE RUN-LEVEL, APP-LEVEL & SCENARIO-LEVEL SLAs
 # ============================================================
+current_key <- as.character(current_run_id)
+vu_status   <- "PASS"
+vu_actual   <- format(round(current_run$total_users[1], 0), big.mark = ",")
+vu_target   <- ">= 1"
+
+if (!is.null(sla_results[[current_key]])) {
+  vu_rules <- Filter(function(x) identical(x$metric, "total_users"), sla_results[[current_key]]$rules)
+  if (length(vu_rules) > 0) {
+    vu_rule   <- vu_rules[[1]]
+    vu_status <- ifelse(isTRUE(vu_rule$passed), "PASS", "FAIL")
+    vu_actual <- format(round(vu_rule$actual, 0), big.mark = ",")
+    vu_target <- paste0(vu_rule$operator, " ", vu_rule$threshold)
+  }
+}
 
 rt_summary <- get_run_rt_sla(current_run_id)
 
-scenario_sla_summary <- NULL
+# Map label RT outcomes onto Scenarios
+cur_scen_map <- db_label_scen_map %>% filter(run_id == current_run_id)
 
-scenario_passed <- 0
-scenario_total  <- 0
-scenario_failed <- 0
-rt_status      <- "N/A"
+joined_labels_all <- tibble(
+  app_name = character(), logical_scenario = character(), label = character(),
+  actual_rt = numeric(), threshold = numeric(), passed = logical(),
+  breach_pct = numeric(), tx_count = integer(), errors = integer(), error_rate = numeric()
+)
 
-if (!is.null(rt_summary)) {
+logical_rt_summary <- tibble(
+  app_name = character(), logical_scenario = character(),
+  total_labels = integer(), passed_labels = integer(), failed_labels = integer(),
+  logical_rt_passed = logical(), worst_label = character(),
+  worst_actual = numeric(), worst_sla = numeric(), worst_breach_pct = numeric()
+)
 
-  scenario_sla_summary <- rt_summary$all_labels %>%
-    left_join(
-      raw_data %>%
-        filter(run_id == current_run_id) %>%
-        distinct(label, thread_group),
-      by = "label"
-    ) %>%
-    group_by(thread_group) %>%
+if (!is.null(rt_summary) && !is.null(rt_summary$all_labels) && nrow(rt_summary$all_labels) > 0) {
+  joined_labels_all <- rt_summary$all_labels %>%
+    inner_join(cur_scen_map, by = c("run_id", "label")) %>%
+    distinct(app_name, logical_scenario, label, actual_rt, threshold, passed, breach_pct, tx_count, errors, error_rate)
+
+  logical_rt_summary <- joined_labels_all %>%
+    group_by(app_name, logical_scenario) %>%
     summarise(
-      passed = all(passed),
-      .groups = "drop"
+      total_labels      = n(),
+      passed_labels     = sum(passed, na.rm = TRUE),
+      failed_labels     = sum(!passed, na.rm = TRUE),
+      logical_rt_passed = all(passed),
+      worst_label       = if (any(!passed)) label[which.max(breach_pct)] else "-",
+      worst_actual      = if (any(!passed)) max(actual_rt, na.rm = TRUE) else 0,
+      worst_sla         = if (any(!passed)) threshold[which.max(breach_pct)] else 0,
+      worst_breach_pct  = if (any(!passed)) max(breach_pct, na.rm = TRUE) else 0,
+      .groups           = "drop"
     )
-
-  scenario_passed <- sum(
-    scenario_sla_summary$passed,
-    na.rm = TRUE
-  )
-
-  scenario_total <- nrow(
-    scenario_sla_summary
-  )
-
-  scenario_failed <- scenario_total - scenario_passed
-
-  rt_status <- if (
-    scenario_failed == 0
-  ) {
-    "PASS"
-  } else {
-    "FAIL"
-  }
 }
 
-rt_failed_details <- rt_summary$all_labels %>%
-  left_join(
-    raw_data %>%
-      filter(run_id == current_run_id) %>%
-      distinct(label, thread_group),
-    by = "label"
-  ) %>%
-  filter(!passed) %>%
-  group_by(thread_group) %>%
-  summarise(
-    actual_rt = max(actual_rt, na.rm = TRUE),
-    threshold = max(threshold, na.rm = TRUE),
-    .groups = "drop"
-  )
-
-failed_rt_scenarios <- scenario_sla_summary %>%
-  filter(!passed)
-
-# ============================================================
-# THROUGHPUT SLA (APP LEVEL)
-# ============================================================
-
-tp_scenario_summary <- raw_data %>%
+# Build Scenario Health DF (grouped by clean Scenario name)
+logical_health_df <- db_logical_scenario_summary %>%
   filter(run_id == current_run_id) %>%
+  left_join(logical_rt_summary, by = c("app_name", "logical_scenario")) %>%
   mutate(
-    is_pass = tolower(trimws(as.character(success))) %in%
-      c("true", "yes", "1")
-  ) %>%
-  group_by(
-    app_name,
-    thread_group
-  ) %>%
-  summarise(
-    successful_transactions = sum(is_pass),
-
-    duration_secs = as.numeric(
-      difftime(
-        max(timestamp),
-        min(timestamp),
-        units = "secs"
-      )
-    ),
-
-    throughput = ifelse(
-      duration_secs > 0,
-      round(
-        successful_transactions /
-        duration_secs,
-        2
-      ),
-      0
-    ),
-    .groups = "drop"
+    logical_rt_passed  = ifelse(is.na(logical_rt_passed), TRUE, logical_rt_passed),
+    scenario_rt_passed = logical_rt_passed,
+    failed_labels      = ifelse(is.na(failed_labels), 0L, failed_labels),
+    thread_group       = logical_scenario
   ) %>%
   rowwise() %>%
   mutate(
-
-    # Uses app-specific TPS threshold if configured.
-    # Falls back to global threshold otherwise.
-    target = get_app_tps_threshold(app_name),
-
-    passed = throughput >= target
-
+    error_target    = get_app_error_threshold(app_name),
+    error_passed    = error_rate <= error_target,
+    scenario_passed = isTRUE(logical_rt_passed) && isTRUE(error_passed)
   ) %>%
   ungroup()
 
-tp_scenario_passed <- sum(
-  tp_scenario_summary$passed,
-  na.rm = TRUE
-)
+scenario_health_df <- logical_health_df
 
-tp_scenario_total <- nrow(
-  tp_scenario_summary
-)
+# Scenario SLA counts
+logical_scen_total    <- nrow(logical_health_df)
+logical_rt_passed_cnt <- sum(logical_health_df$logical_rt_passed, na.rm = TRUE)
+logical_rt_failed_cnt <- logical_scen_total - logical_rt_passed_cnt
+logical_er_passed_cnt <- sum(logical_health_df$error_passed, na.rm = TRUE)
+logical_er_failed_cnt <- logical_scen_total - logical_er_passed_cnt
 
-failed_tp_scenarios <- tp_scenario_summary %>%
-  filter(!passed)
+rt_status <- if (logical_rt_failed_cnt == 0) "PASS" else "FAIL"
+er_status <- if (logical_er_failed_cnt == 0) "PASS" else "FAIL"
 
-# ============================================================
-# ERROR RATE SLA (USER SCENARIO LEVEL)
-# ============================================================
-
-er_scenario_summary <- raw_data %>%
-  filter(run_id == current_run_id) %>%
-  mutate(
-    is_pass = tolower(trimws(as.character(success))) %in%
-      c("true", "yes", "1")
-  ) %>%
-  group_by(
+# Application-level Health + Baseline Deltas
+cur_apps  <- db_app_summary %>% filter(run_id == current_run_id)
+base_apps <- db_app_summary %>%
+  filter(run_id == baseline_run_id) %>%
+  select(
     app_name,
-    thread_group
-  ) %>%
-  summarise(
-
-    transactions = n(),
-
-    errors = sum(
-      !is_pass,
-      na.rm = TRUE
-    ),
-
-    error_rate = round(
-      errors /
-      transactions * 100,
-      2
-    ),
-
-    .groups = "drop"
-
-  ) %>%
-  rowwise() %>%
-  mutate(
-
-    # Uses app-specific Error Rate threshold if configured.
-    # Falls back to global threshold otherwise.
-    target = get_app_error_threshold(app_name),
-
-    passed = error_rate <= target
-
-  ) %>%
-  ungroup()
-
-failed_er_scenarios <- er_scenario_summary %>%
-  filter(!passed)
-
-er_scenario_passed <- sum(
-  er_scenario_summary$passed,
-  na.rm = TRUE
-)
-
-er_scenario_total <- nrow(
-  er_scenario_summary
-)
-
-# ============================================================
-# SLA STATUS COLOURS
-# ============================================================
-
-status_class <- function(x) {
-
-  if (x == "PASS") {
-    return("status-pass")
-  }
-
-  if (x == "FAIL") {
-    return("status-fail")
-  }
-
-  "status-na"
-}
-
-status_colour <- function(status) {
-
-  if (status == "PASS") {
-    return("#28a745")
-  }
-
-  if (status == "FAIL") {
-    return("#dc3545")
-  }
-
-  "#6c757d"
-}
-
-delta_label <- function(
-  current,
-  baseline,
-  lower_is_better = FALSE
-) {
-
-  if (is.na(current) || is.na(baseline)) {
-    return("No Baseline")
-  }
-
-  if (baseline == 0) {
-
-    if (current == 0) {
-      return("▬ No Change from Baseline")
-    }
-
-    return("▲ New Metric vs Baseline")
-  }
-
-  delta <- round(
-    ((current - baseline) / baseline) * 100,
-    1
+    base_tx         = transactions,
+    base_throughput = throughput,
+    base_pct_rt     = pct_rt,
+    base_error_rate = error_rate
   )
 
-  if (delta == 0) {
-    return("▬ No Change from Baseline")
-  }
-
-  if (lower_is_better) {
-
-    if (delta < 0) {
-
-      return(
-        sprintf(
-          "▼ %.1f%% from Baseline",
-          abs(delta)
-        )
-      )
-
-    }
-
-    return(
-      sprintf(
-        "▲ %.1f%% from Baseline",
-        delta
-      )
-    )
-  }
-
-  if (delta > 0) {
-
-    return(
-      sprintf(
-        "▲ %.1f%% from Baseline",
-        delta
-      )
-    )
-
-  }
-
-  sprintf(
-    "▼ %.1f%% from Baseline",
-    abs(delta)
-  )
-
-}
-# ============================================================
-# APPLICATION TPS PASS RATE
-# ============================================================
-
-app_tps_summary <- raw_data %>%
-  filter(run_id == current_run_id) %>%
-  mutate(
-    is_pass = tolower(trimws(as.character(success))) %in%
-      c("true", "yes", "1")
-  ) %>%
+app_logical_scen_counts <- logical_health_df %>%
   group_by(app_name) %>%
   summarise(
-    successful_transactions = sum(is_pass),
-    duration_secs = as.numeric(
-      difftime(
-        max(timestamp),
-        min(timestamp),
-        units = "secs"
-      )
-    ),
-    throughput = ifelse(
-      duration_secs > 0,
-      successful_transactions / duration_secs,
-      0
-    ),
-    .groups = "drop"
-  ) %>%
+    logical_total  = n(),
+    logical_passed = sum(logical_rt_passed, na.rm = TRUE),
+    logical_failed = sum(!logical_rt_passed, na.rm = TRUE),
+    .groups        = "drop"
+  )
+
+app_rt_breach_summary <- if (nrow(joined_labels_all) > 0) {
+  joined_labels_all %>%
+    group_by(app_name) %>%
+    summarise(
+      total_app_labels  = n(),
+      passed_app_labels = sum(passed, na.rm = TRUE),
+      breach_count      = sum(!passed, na.rm = TRUE),
+      worst_label       = if (any(!passed)) label[which.max(breach_pct)] else "-",
+      worst_actual      = if (any(!passed)) max(actual_rt, na.rm = TRUE) else 0,
+      worst_sla         = if (any(!passed)) threshold[which.max(breach_pct)] else 0,
+      .groups           = "drop"
+    )
+} else {
+  tibble(app_name = character(), total_app_labels = integer(), passed_app_labels = integer(), breach_count = integer(), worst_label = character(), worst_actual = numeric(), worst_sla = numeric())
+}
+
+app_health <- cur_apps %>%
+  left_join(base_apps, by = "app_name") %>%
+  left_join(app_logical_scen_counts, by = "app_name") %>%
+  left_join(app_rt_breach_summary, by = "app_name") %>%
   rowwise() %>%
   mutate(
-    target = get_app_tps_threshold(app_name),
-    passed = throughput >= target
+    throughput_target = get_app_tps_threshold(app_name),
+    throughput_pass   = throughput >= throughput_target,
+    error_target      = get_app_error_threshold(app_name),
+    error_pass        = error_rate <= error_target,
+    scenario_pass     = is.na(logical_failed) || logical_failed == 0,
+    application_pass  = isTRUE(throughput_pass) && isTRUE(error_pass) && isTRUE(scenario_pass)
   ) %>%
   ungroup()
 
-tp_app_passed <- sum(
-  app_tps_summary$passed,
-  na.rm = TRUE
-)
+tp_app_total  <- nrow(app_health)
+tp_app_passed <- sum(app_health$throughput_pass, na.rm = TRUE)
+tp_status     <- if (tp_app_passed == tp_app_total) "PASS" else "FAIL"
 
-tp_app_total <- nrow(
-  app_tps_summary
-)
+applications_total  <- nrow(app_health)
+applications_passed <- sum(app_health$application_pass, na.rm = TRUE)
+applications_failed <- applications_total - applications_passed
 
-failed_tp_apps <- app_tps_summary %>%
-  filter(!passed)
+overall_status <- (vu_status == "PASS") &&
+                  (tp_app_passed == tp_app_total) &&
+                  (logical_er_passed_cnt == logical_scen_total) &&
+                  (logical_rt_passed_cnt == logical_scen_total)
 
-tp_status <- if (
-  tp_app_passed == tp_app_total
-) {
-  "PASS"
-} else {
-  "FAIL"
-}
-
-er_status <- if (
-  er_scenario_passed == er_scenario_total
-) {
-  "PASS"
-} else {
-  "FAIL"
-}
+overall_icon   <- if (isTRUE(overall_status)) "✅" else "❌"
+overall_badge  <- if (isTRUE(overall_status)) "<span class='status-pass'>PASS</span>" else "<span class='status-fail'>FAIL</span>"
+topbar_class   <- if (isTRUE(overall_status)) "hd-top-bar" else "hd-top-bar fail"
+callout_class  <- if (isTRUE(overall_status)) "hd-assessment-callout" else "hd-assessment-callout fail"
 
 # ============================================================
-# PRIMARY FAILURE DRIVERS
+# 4. ZONE 1: CONSOLIDATED TOP STATUS & METADATA BAR + KPI ROW
 # ============================================================
+top_bar_html <- sprintf(
+  '<div class="%s">
+     <div class="hd-status-pill-box">
+       <span class="hd-status-title">%s OVERALL STATUS: %s</span>
+     </div>
+     <div class="hd-meta-group">
+       <span class="hd-meta-tag">Test Details</span>
+       <span class="hd-meta-item">🗀 <strong>Project:</strong> %s</span>
+       <span class="hd-meta-item">🧪 <strong>Test:</strong> %s</span>
+       <span class="hd-meta-item">🖥 <strong>Apps:</strong> %s</span>
+     </div>
+     <div class="hd-meta-group">
+       <span class="hd-meta-tag" style="background:#DBEAFE;color:#1E40AF;">Current Run #%s</span>
+       <span class="hd-meta-item">⏱ <strong>%s</strong></span>
+       <span class="hd-meta-item" style="color:#64748B;">(%s – %s)</span>
+     </div>
+     <div class="hd-meta-group">
+       <span class="hd-meta-tag">Baseline Run #%s</span>
+       <span class="hd-meta-item">⏱ <strong>%s</strong></span>
+       <span class="hd-meta-item" style="color:#64748B;">(%s – %s)</span>
+     </div>
+     <div style="margin-left:auto;">
+       <button type="button" class="hd-modal-btn" style="background:#EFF6FF;border-color:#93C5FD;color:#1D4ED8;padding:3px 10px;" onclick="openChartsModal(\'GRID\')">📈 Executive Charts 🔍</button>
+     </div>
+   </div>',
+  topbar_class,
+  overall_icon,
+  overall_badge,
+  project_name,
+  scenario_name,
+  application_list,
+  current_run_id,
+  current_duration,
+  current_start_fmt,
+  current_end_fmt,
+  baseline_run_id,
+  baseline_duration,
+  baseline_start_fmt,
+  baseline_end_fmt
+)
 
-failure_items <- c()
+# Build Two-Line Executive Assessment Callout Text
+rt_delta_pct <- if (has_baseline && baseline_run$pct_rt[1] > 0) {
+  round(((current_run$pct_rt[1] - baseline_run$pct_rt[1]) / baseline_run$pct_rt[1]) * 100, 1)
+} else 0
+tp_delta_pct <- if (has_baseline && baseline_run$throughput[1] > 0) {
+  round(((current_run$throughput[1] - baseline_run$throughput[1]) / baseline_run$throughput[1]) * 100, 1)
+} else 0
 
-if (tp_status == "FAIL") {
-
-  tp_details <- paste0(
-    "<ul>",
-    paste(
-      sprintf(
-        "<li><span class='executive-subtext'>%s - %.2f TPS (Target: %.2f TPS)</span></li>",
-        failed_tp_apps$app_name,
-        failed_tp_apps$throughput,
-        failed_tp_apps$target
-      ),
-
-      collapse = ""
-    ),
-    "</ul>"
-  )
-
-  failure_items <- c(
-    failure_items,
-    paste0(
-      sprintf(
-        "%s of %s Applications failed Throughput SLA",
-        tp_app_total - tp_app_passed,
-        tp_app_total
-      ),
-      tp_details
-    )
-  )
-
+worst_breach_str <- if (!is.null(rt_summary) && nrow(rt_summary$top_breaches) > 0) {
+  wb <- rt_summary$top_breaches[1, ]
+  sprintf("Worst breach: <strong>%s</strong> at <strong>%s ms</strong> (+%s%% vs %s ms SLA).",
+          wb$label, format(wb$actual_rt, big.mark = ","), wb$breach_pct, format(wb$threshold, big.mark = ","))
+} else {
+  "All transaction response times operated within configured SLA thresholds."
 }
 
-if (er_status == "FAIL") {
-
-  er_details <- paste0(
-    "<ul>",
-    paste(
-      sprintf(
-        "<li><span class='executive-subtext'>%s - %.2f%% (Target: %.2f%%)</span></li>",
-        failed_er_scenarios$thread_group,
-        failed_er_scenarios$error_rate,
-        failed_er_scenarios$target
-      ),
-      collapse = ""
-    ),
-    "</ul>"
-  )
-
-  failure_items <- c(
-    failure_items,
-    paste0(
-      sprintf(
-        "%s of %s User Scenarios failed Error Rate SLA",
-        er_scenario_total - er_scenario_passed,
-        er_scenario_total
-      ),
-      er_details
-    )
-  )
-
+exec_line_1 <- if (isTRUE(overall_status)) {
+  sprintf("Run <strong>#%s</strong> achieved <mark class='sla-pass'>OVERALL PASS</mark> across <strong>%s VU</strong> at <strong>%.2f TPS</strong> with <strong>%.2f%%</strong> error rate.",
+          current_run_id, vu_actual, current_run$throughput[1], current_run$error_rate[1])
+} else {
+  sprintf("Run <strong>#%s</strong> resulted in <mark class='sla-fail'>OVERALL FAIL</mark>: <strong>%d of %d</strong> scenarios breached %s Response Time SLA (%d transaction breaches), while TPS (<strong>%.2f TPS</strong>) and Error SLA (<strong>%.2f%%</strong>) passed.",
+          current_run_id, logical_rt_failed_cnt, logical_scen_total, rt_metric_name,
+          if (!is.null(rt_summary)) rt_summary$failed_count else 0,
+          current_run$throughput[1], current_run$error_rate[1])
 }
 
-if (vu_status == "FAIL") {
-  failure_items <- c(
-    failure_items,
+exec_line_2 <- sprintf(
+  "Compared to Baseline <strong>#%s</strong>, aggregate %s RT is <strong>%s ms</strong> (%s%.1f%% vs %s ms) and throughput is <strong>%.2f TPS</strong> (%s%.1f%%). %s",
+  baseline_run_id,
+  rt_metric_name,
+  format(current_run$pct_rt[1], big.mark = ","),
+  ifelse(rt_delta_pct > 0, "+", ""), rt_delta_pct,
+  format(baseline_run$pct_rt[1], big.mark = ","),
+  current_run$throughput[1],
+  ifelse(tp_delta_pct > 0, "+", ""), tp_delta_pct,
+  worst_breach_str
+)
+
+vu_card_colour <- if (identical(vu_status, "FAIL")) "#DC2626" else "#2563EB"
+
+kpi_row_html <- sprintf(
+  '<div class="hd-exec-kpi-row">
+     <div class="%s">
+       <div class="hd-assessment-title">⚡ Executive Assessment <span style="font-weight:400;color:#64748B;text-transform:none;">(Run #%s vs #%s)</span></div>
+       <div class="hd-assessment-text">%s<br/>%s</div>
+     </div>
+     <div class="hd-kpi-strip">
+       <div class="hd-kpi-tile" style="border-left-color:%s;cursor:pointer;" onclick="openChartsModal(\'TIMELINE\')">
+         <div class="hd-kpi-value-row">
+           <span class="hd-kpi-value" style="color:%s;">%s</span>
+           <span class="hd-kpi-sub">Target %s</span>
+         </div>
+         <div class="hd-kpi-label">Max Virtual Users 📈</div>
+       </div>
+       <div class="hd-kpi-tile" style="border-left-color:%s;cursor:pointer;" onclick="openSlaModal(\'ALL\')">
+         <div class="hd-kpi-value-row">
+           <span class="hd-kpi-value" style="color:%s;">%d of %d</span>
+           <span class="hd-kpi-sub">%.2f TPS</span>
+         </div>
+         <div class="hd-kpi-label">Apps Passed TPS SLA 🔍</div>
+       </div>
+       <div class="hd-kpi-tile" style="border-left-color:%s;cursor:pointer;" onclick="openScenarioModal(\'ALL\')">
+         <div class="hd-kpi-value-row">
+           <span class="hd-kpi-value" style="color:%s;">%d of %d</span>
+           <span class="hd-kpi-sub">%s ms %s</span>
+         </div>
+         <div class="hd-kpi-label">Scenarios Passed %s SLA 🔍</div>
+       </div>
+       <div class="hd-kpi-tile" style="border-left-color:%s;cursor:pointer;" onclick="openErrorModal(\'ALL\')">
+         <div class="hd-kpi-value-row">
+           <span class="hd-kpi-value" style="color:%s;">%d of %d</span>
+           <span class="hd-kpi-sub">%.2f%% Err</span>
+         </div>
+         <div class="hd-kpi-label">Scenarios Passed Error SLA 🔍</div>
+       </div>
+     </div>
+   </div>',
+  callout_class,
+  current_run_id, baseline_run_id,
+  exec_line_1, exec_line_2,
+  vu_card_colour, vu_card_colour, vu_actual, vu_target,
+  status_colour(tp_status), status_colour(tp_status), tp_app_passed, tp_app_total, current_run$throughput[1],
+  status_colour(rt_status), status_colour(rt_status), logical_rt_passed_cnt, logical_scen_total, format(current_run$pct_rt[1], big.mark = ","), rt_metric_name, rt_metric_name,
+  status_colour(er_status), status_colour(er_status), logical_er_passed_cnt, logical_scen_total, current_run$error_rate[1]
+)
+
+# ============================================================
+# 5. ZONE 2: PROMOTED APPLICATION HEALTH & BASELINE MATRIX
+#    - SLA Status button opens SLA Evaluation Summary Modal
+#    - Scenarios Met RT SLA button opens Scenario Health Modal
+# ============================================================
+app_rows_html <- paste(
+  lapply(seq_len(nrow(app_health)), function(i) {
+    r <- app_health[i, ]
+    app_id_safe <- safe_dom_id(r$app_name)
+
+    status_badge_inner <- if (isTRUE(r$application_pass)) {
+      "<span class='status-pass'>✅ PASS</span>"
+    } else {
+      "<span class='status-fail'>❌ FAIL</span>"
+    }
+
+    status_cell <- sprintf(
+      "<button type='button' class='hd-modal-btn' onclick=\"openSlaModal('%s')\">%s 🔍</button>",
+      app_id_safe,
+      status_badge_inner
+    )
+
+    tx_delta_html <- inline_delta_badge(r$transactions, r$base_tx, lower_is_better = FALSE)
+    tp_delta_html <- inline_delta_badge(r$throughput, r$base_throughput, lower_is_better = FALSE)
+    rt_delta_html <- inline_delta_badge(r$pct_rt, r$base_pct_rt, lower_is_better = TRUE)
+    er_delta_html <- inline_delta_badge(r$error_rate, r$base_error_rate, lower_is_better = TRUE)
+
+    tp_cell <- paste0(metric_badge(sprintf("%.2f TPS", r$throughput), r$throughput_pass), tp_delta_html)
+    rt_cell <- paste0(
+      metric_badge(sprintf("%s ms", format(round(r$pct_rt), big.mark = ",")), r$scenario_pass),
+      rt_delta_html,
+      if (!is.na(r$logical_failed) && r$logical_failed > 0) {
+        sprintf(" <span style='font-size:10px;color:#DC2626;font-weight:600;'>(%d scenario breach%s)</span>",
+                r$logical_failed, ifelse(r$logical_failed > 1, "es", ""))
+      } else ""
+    )
+    er_cell <- paste0(metric_badge(sprintf("%.2f%%", r$error_rate), r$error_pass), er_delta_html)
+
+    scen_btn <- sprintf(
+      "<button type='button' class='hd-modal-btn' onclick=\"openScenarioModal('%s')\">%s 🔍</button>",
+      app_id_safe,
+      metric_badge(sprintf("%d of %d", r$logical_passed, r$logical_total), r$scenario_pass)
+    )
+
     sprintf(
-      "Virtual User target not met (%s vs %s)",
-      vu_actual,
-      vu_target
+      "<tr style='cursor:pointer;' onclick=\"if(!event.target.closest('button, a')) openScenarioModal('%s')\">
+         <td style='font-weight:700;'>%s</td>
+         <td>%s</td>
+         <td class='numeric-cell'>%s%s</td>
+         <td class='numeric-cell'>%s</td>
+         <td class='numeric-cell'>%s</td>
+         <td class='numeric-cell'>%s</td>
+         <td style='text-align:center;'>%s</td>
+       </tr>",
+      app_id_safe,
+      r$app_name,
+      status_cell,
+      format(r$transactions, big.mark = ","), tx_delta_html,
+      tp_cell,
+      rt_cell,
+      er_cell,
+      scen_btn
     )
-  )
-}
+  }),
+  collapse = "\n"
+)
 
-if (rt_status == "FAIL") {
-
-  rt_details <- paste0(
-    "<ul>",
-    paste(
-      sprintf(
-        "<li><span class='executive-subtext'>%s - %s ms (SLA: %s ms)</span></li>",
-        rt_failed_details$thread_group,
-        format(
-          round(rt_failed_details$actual_rt),
-          big.mark = ","
-        ),
-        format(
-          round(rt_failed_details$threshold),
-          big.mark = ","
-        )
-      ),
-      collapse = ""
-    ),
-    "</ul>"
-  )
-
-  failure_items <- c(
-    failure_items,
-    paste0(
-      sprintf(
-        "%s of %s User Scenarios failed Response Time SLA",
-        scenario_failed,
-        scenario_total
-      ),
-      rt_details
-    )
-  )
-
-}
-
-failure_section <- ""
-
-if (length(failure_items) > 0) {
-
-  failure_section <- paste0(
-    "<div class='failure-drivers'>",
-    "<ul>",
-    paste0("<li>", failure_items, "</li>", collapse = ""),
-    "</ul>",
-    "</div>"
-  )
-}
-
-failure_card <- paste0(
-  '<div style="
-      flex:1;
-      background:#f8f9fa;
-      border:1px solid #dee2e6;
-      border-radius:4px;
-      padding:14px;
-    ">',
-  '<h3 class="section-header">Primary Failure Drivers</h3>',
-  failure_section,
-  '</div>'
+app_matrix_card_html <- sprintf(
+  '<div class="hd-card">
+     <div class="hd-card-header">
+       <h3 class="hd-card-title">🏥 Application Health &amp; Baseline Matrix <span style="font-size:10.5px;font-weight:500;color:#64748B;text-transform:none;">(Inline Δ vs Baseline #%s — Click SLA Status or Scenarios 🔍 for Drilldown)</span></h3>
+       <div class="hd-card-badges">
+         <span class="total-app">Total Apps: %d</span>
+         <span class="status-pass">Passing: %d</span>
+         <span class="status-fail">Failing: %d</span>
+       </div>
+     </div>
+     <div class="hd-table-scroll" style="max-height:110px;">
+       <table class="hd-table">
+         <thead>
+           <tr>
+             <th>Application</th>
+             <th>SLA Status</th>
+             <th class="numeric-header">Requests (vs Base)</th>
+             <th class="numeric-header">Avg. Throughput (vs Base)</th>
+             <th class="numeric-header">%s (vs Base)</th>
+             <th class="numeric-header">Error Rate (vs Base)</th>
+             <th style="text-align:center;">Scenarios Met RT SLA</th>
+           </tr>
+         </thead>
+         <tbody>
+           %s
+         </tbody>
+       </table>
+     </div>
+   </div>',
+  baseline_run_id,
+  applications_total, applications_passed, applications_failed,
+  rt_column_title,
+  app_rows_html
 )
 
 # ============================================================
-# TOP ERRORS
+# 6. ZONE 3: SIDE-BY-SIDE FAILURE ANALYSIS TABLES
+#    Left: Scenario Breakdown (Labels Met SLA opens Label SLA Modal)
+#    Right: Top Response Time Breaches (with Inline Severity Micro-Bars)
 # ============================================================
 
-error_details <- raw_data %>%
-  filter(run_id == current_run_id) %>%
-  mutate(
-    is_pass = tolower(trimws(as.character(success))) %in%
-      c("true", "yes", "1"),
-    responseCode = if ("responseCode" %in% names(.))
-    as.character(responseCode)
-    else
-    "N/A",
-    responseMessage = if ("responseMessage" %in% names(.))
-    as.character(responseMessage)
-    else
-    "Unknown Error"
-  ) %>%
-  filter(!is_pass) %>%
-  group_by(
-    app_name,
-    label,
-    responseCode,
-    responseMessage
-  ) %>%
-  summarise(
-    error_count = n(),
-    .groups = "drop"
-  ) %>%
-  arrange(
-    app_name,
-    label,
-    desc(error_count)
-  )
-
-build_error_tooltip <- function(df) {
-
-  top_errors <- head(df, 3)
-
-  additional_count <- max(
-    nrow(df) - 3,
-    0
-  )
-
-  tooltip <- paste(
-    ifelse(
-      top_errors$responseCode == "0" &
-      top_errors$responseMessage == "0",
-
-      sprintf(
-        "No response code and error message (%s Errors)",
-        top_errors$error_count
-      ),
-
-      sprintf(
-        "HTTP %s - %s (%s Errors)",
-        top_errors$responseCode,
-        top_errors$responseMessage,
-        top_errors$error_count
-      )
-    ),
-    collapse = "\n\n"
-  )
-
-  if (additional_count > 0) {
-
-    tooltip <- paste0(
-      tooltip,
-      "\n\n+",
-      additional_count,
-      " additional error types"
+# Left Table: Scenario Breakdown
+logical_rows_html <- paste(
+  lapply(seq_len(nrow(logical_health_df)), function(i) {
+    r <- logical_health_df[i, ]
+    scen_id_safe <- safe_dom_id(r$logical_scenario)
+    status_b <- if (isTRUE(r$scenario_passed)) "<span class='status-pass'>PASS</span>" else "<span class='status-fail'>FAIL</span>"
+    rt_b     <- metric_badge(sprintf("%s ms", format(round(r$pct_rt), big.mark = ",")), r$logical_rt_passed)
+    lbl_b    <- metric_badge(sprintf("%d of %d", r$passed_labels, r$total_labels), r$logical_rt_passed)
+    lbl_btn  <- sprintf(
+      "<button type='button' class='hd-modal-btn' onclick=\"openLabelModal('%s')\">%s 🔍</button>",
+      scen_id_safe, lbl_b
     )
+    er_b     <- metric_badge(sprintf("%.2f%%", r$error_rate), r$error_passed)
 
+    sprintf(
+      "<tr style='cursor:pointer;' onclick=\"if(!event.target.closest('button, a')) openLabelModal('%s')\">
+         <td style='font-weight:600;font-family:monospace;font-size:11px;'>%s</td>
+         <td style='text-align:center;'>%s</td>
+         <td class='numeric-cell'>%s</td>
+         <td class='numeric-cell'>%.2f TPS</td>
+         <td class='numeric-cell'>%s</td>
+         <td style='text-align:center;'>%s</td>
+         <td class='numeric-cell'>%s</td>
+       </tr>",
+      scen_id_safe,
+      r$logical_scenario,
+      status_b,
+      format(r$requests, big.mark = ","),
+      r$throughput,
+      rt_b,
+      lbl_btn,
+      er_b
+    )
+  }),
+  collapse = "\n"
+)
+
+left_scenario_card_html <- sprintf(
+  '<div class="hd-card">
+     <div class="hd-card-header">
+       <h3 class="hd-card-title">🧭 Scenario Breakdown <span style="font-size:10.5px;font-weight:500;color:#64748B;text-transform:none;">(Click Labels Met SLA 🔍 for Label Drilldown)</span></h3>
+       <div class="hd-card-badges">
+         <button type="button" class="hd-modal-btn" onclick="openChartsModal(\'SCENARIOS\')">📊 Compare vs Base</button>
+         <button type="button" class="hd-modal-btn" onclick="openScenarioModal(\'ALL\')"><span class="%s">%d of %d Passed</span> 🔍</button>
+       </div>
+     </div>
+     <div class="hd-table-scroll">
+       <table class="hd-table">
+         <thead>
+           <tr>
+             <th>Scenario</th>
+             <th style="text-align:center;">Status</th>
+             <th class="numeric-header">Requests</th>
+             <th class="numeric-header">TPS</th>
+             <th class="numeric-header">%s</th>
+             <th style="text-align:center;">Labels Met SLA</th>
+             <th class="numeric-header">Error %%</th>
+           </tr>
+         </thead>
+         <tbody>
+           %s
+         </tbody>
+       </table>
+     </div>
+   </div>',
+  ifelse(logical_rt_failed_cnt == 0 && logical_er_failed_cnt == 0, "status-pass", "status-fail"),
+  sum(logical_health_df$scenario_passed, na.rm = TRUE), logical_scen_total,
+  rt_metric_name,
+  logical_rows_html
+)
+
+# Right Table: Top Response Time Breaches (with Inline Micro-Bars)
+breach_rows_html <- ""
+breach_badge_html <- "<span class='status-pass'>0 Breaches</span>"
+
+if (!is.null(rt_summary) && rt_summary$failed_count > 0 && nrow(rt_summary$top_breaches) > 0) {
+  breach_badge_html <- sprintf(
+    "<button type='button' class='hd-modal-btn' onclick=\"openLabelModal('BREACHES')\"><span class='status-fail'>Top %d of %d Breaches</span> 🔍</button>",
+    nrow(rt_summary$top_breaches), rt_summary$failed_count
+  )
+
+  # Map each breached label to its scenario
+  label_to_logical <- cur_scen_map %>%
+    group_by(label) %>%
+    summarise(logical_scenario = first(logical_scenario), .groups = "drop")
+
+  top_b_df <- rt_summary$top_breaches %>%
+    left_join(label_to_logical, by = "label")
+
+  max_breach_pct <- max(top_b_df$breach_pct, 1, na.rm = TRUE)
+
+  breach_rows_html <- paste(
+    lapply(seq_len(nrow(top_b_df)), function(i) {
+      b <- top_b_df[i, ]
+      scen_short <- ifelse(is.na(b$logical_scenario), "-", b$logical_scenario)
+      scen_id_safe <- if (scen_short != "-") safe_dom_id(scen_short) else "BREACHES"
+      bar_w <- max(min(round((b$breach_pct / max_breach_pct) * 100, 0), 100), 8)
+      sprintf(
+        "<tr style='cursor:pointer;' onclick=\"openLabelModal('%s')\">
+           <td style='font-family:monospace;font-size:11px;font-weight:600;'>%s <span style='color:#64748B;font-weight:400;font-size:10px;'>[%s]</span></td>
+           <td class='numeric-cell'><span class='status-fail'>%s ms</span></td>
+           <td class='numeric-cell' style='color:#64748B;'>%s ms</td>
+           <td class='numeric-cell'>
+             <div class='hd-microbar-cell'>
+               <span class='hd-delta-inline hd-delta-fail'>▲ +%s%%</span>
+               <div class='hd-microbar-track'><div class='hd-microbar-fill danger' style='width:%d%%;'></div></div>
+             </div>
+           </td>
+         </tr>",
+        scen_id_safe,
+        b$label,
+        scen_short,
+        format(round(b$actual_rt), big.mark = ","),
+        format(round(b$threshold), big.mark = ","),
+        format(b$breach_pct, nsmall = 1),
+        bar_w
+      )
+    }),
+    collapse = "\n"
+  )
+} else {
+  breach_rows_html <- "<tr><td colspan='4' style='text-align:center;color:#16A34A;font-weight:600;padding:12px;'>✓ All transactions satisfied Response Time SLA thresholds.</td></tr>"
+}
+
+right_breach_card_html <- sprintf(
+  '<div class="hd-card">
+     <div class="hd-card-header">
+       <h3 class="hd-card-title">🔥 Top Response Time Breaches <span style="font-size:10.5px;font-weight:500;color:#64748B;text-transform:none;">(%s vs Threshold — Click to View All)</span></h3>
+       <div class="hd-card-badges">%s</div>
+     </div>
+     <div class="hd-table-scroll">
+       <table class="hd-table">
+         <thead>
+           <tr>
+             <th>Transaction [Scenario]</th>
+             <th class="numeric-header">Actual (%s)</th>
+             <th class="numeric-header">SLA</th>
+             <th class="numeric-header">Impact</th>
+           </tr>
+         </thead>
+         <tbody>
+           %s
+         </tbody>
+       </table>
+     </div>
+   </div>',
+  rt_metric_name,
+  breach_badge_html,
+  rt_metric_name,
+  breach_rows_html
+)
+
+mid_grid_html <- sprintf('<div class="hd-grid-2col">%s%s</div>', left_scenario_card_html, right_breach_card_html)
+
+# ============================================================
+# 7. ZONE 4: TWO-COLUMN BOTTOM GRID
+#    Left: Top 10 of N Error Contributors (with Inline Share Micro-Bars)
+#    Right: Current vs Baseline Comparison Scorecard
+# ============================================================
+
+# Left Bottom: Top Error Contributors
+error_summary_cur <- db_error_summary %>% filter(run_id == current_run_id)
+error_details_cur <- db_error_details %>% filter(run_id == current_run_id)
+
+top_errors <- error_summary_cur %>% slice_head(n = 10)
+total_run_errors <- sum(error_summary_cur$errors, na.rm = TRUE)
+
+error_badge_html <- if (nrow(error_summary_cur) > 0) {
+  sprintf(
+    "<button type='button' class='hd-modal-btn' onclick=\"openChartsModal('ERRORS')\">📈 Pareto</button> <button type='button' class='hd-modal-btn' onclick=\"openErrorModal('ALL')\"><span class='status-fail'>Top %d of %d Transactions (%s Total Errors)</span> 🔍</button>",
+    nrow(top_errors), nrow(error_summary_cur), format(total_run_errors, big.mark = ",")
+  )
+} else {
+  "<span class='status-pass'>0 Errors</span>"
+}
+
+error_rows_html <- if (nrow(top_errors) > 0) {
+  max_err_cnt <- max(top_errors$errors, 1, na.rm = TRUE)
+  paste(
+    lapply(seq_len(nrow(top_errors)), function(i) {
+      r <- top_errors[i, ]
+      tx_id_safe <- safe_dom_id(paste0(r$app_name, "_", r$label))
+      bar_w <- max(min(round((r$errors / max_err_cnt) * 100, 0), 100), 6)
+      err_btn <- sprintf(
+        "<div class='hd-microbar-cell'>
+           <button type='button' class='hd-modal-btn' onclick=\"openErrorModal('%s')\"><span style='color:#DC2626;font-weight:700;'>%s</span> 🔍</button>
+           <div class='hd-microbar-track'><div class='hd-microbar-fill danger' style='width:%d%%;'></div></div>
+         </div>",
+        tx_id_safe,
+        format(r$errors, big.mark = ","),
+        bar_w
+      )
+      sprintf(
+        "<tr style='cursor:pointer;' onclick=\"if(!event.target.closest('button, a')) openErrorModal('%s')\">
+           <td style='font-weight:600;'>%s</td>
+           <td style='font-family:monospace;font-size:11px;font-weight:600;'>%s</td>
+           <td class='numeric-cell'>%s</td>
+           <td class='numeric-cell'>%s</td>
+           <td class='numeric-cell'>%.2f%%</td>
+         </tr>",
+        tx_id_safe,
+        r$app_name, r$label,
+        format(r$total_transactions, big.mark = ","),
+        err_btn,
+        r$error_rate
+      )
+    }),
+    collapse = "\n"
+  )
+} else {
+  "<tr><td colspan='5' style='text-align:center;color:#16A34A;font-weight:600;padding:12px;'>✓ No transaction errors detected during the test run.</td></tr>"
+}
+
+left_error_card_html <- sprintf(
+  '<div class="hd-card">
+     <div class="hd-card-header">
+       <h3 class="hd-card-title">⚠️ Top Error Contributors <span style="font-size:10.5px;font-weight:500;color:#64748B;text-transform:none;">(Click Row or Errors 🔍 for HTTP Breakdown)</span></h3>
+       <div class="hd-card-badges">%s</div>
+     </div>
+     <div class="hd-table-scroll">
+       <table class="hd-table">
+         <thead>
+           <tr>
+             <th>App</th>
+             <th>Transaction</th>
+             <th class="numeric-header">Total Tx</th>
+             <th class="numeric-header">Errors</th>
+             <th class="numeric-header">Error Rate</th>
+           </tr>
+         </thead>
+         <tbody>
+           %s
+         </tbody>
+       </table>
+     </div>
+   </div>',
+  error_badge_html,
+  error_rows_html
+)
+
+# Right Bottom: Current vs Baseline Comparison Scorecard
+base_rt <- get_run_rt_sla(baseline_run_id)
+current_rt_pass_rate  <- if (!is.null(rt_summary) && rt_summary$total_labels > 0) round((rt_summary$passed_count / rt_summary$total_labels) * 100, 1) else NA
+baseline_rt_pass_rate <- if (!is.null(base_rt) && base_rt$total_labels > 0) round((base_rt$passed_count / base_rt$total_labels) * 100, 1) else NA
+
+calc_tps_pass_rate <- function(target_rid) {
+  sub_apps <- db_app_summary %>% filter(run_id == target_rid)
+  if (nrow(sub_apps) == 0) return(NA)
+  passed <- sapply(seq_len(nrow(sub_apps)), function(i) sub_apps$throughput[i] >= get_app_tps_threshold(sub_apps$app_name[i]))
+  round(sum(passed, na.rm = TRUE) / nrow(sub_apps) * 100, 2)
+}
+
+calc_err_pass_rate <- function(target_rid) {
+  sub_scens <- db_scenario_summary %>% filter(run_id == target_rid)
+  if (nrow(sub_scens) == 0) return(NA)
+  passed <- sapply(seq_len(nrow(sub_scens)), function(i) sub_scens$error_rate[i] <= get_app_error_threshold(sub_scens$app_name[i]))
+  round(sum(passed, na.rm = TRUE) / nrow(sub_scens) * 100, 2)
+}
+
+current_tps_pass_rate  <- calc_tps_pass_rate(current_run_id)
+baseline_tps_pass_rate <- calc_tps_pass_rate(baseline_run_id)
+current_err_pass_rate  <- calc_err_pass_rate(current_run_id)
+baseline_err_pass_rate <- calc_err_pass_rate(baseline_run_id)
+
+right_scorecard_card_html <- sprintf(
+  '<div class="hd-card">
+     <div class="hd-card-header">
+       <h3 class="hd-card-title">⚖️ Current vs Baseline Comparison <span style="font-size:10.5px;font-weight:500;color:#64748B;text-transform:none;">(Run #%s vs Baseline #%s)</span></h3>
+       <div class="hd-card-badges">
+         <button type="button" class="hd-modal-btn" onclick="openChartsModal(\'GRID\')">📈 Trend Charts 🔍</button>
+         <span class="total-app">Δ Scorecard</span>
+       </div>
+     </div>
+     <div class="hd-table-scroll">
+       <table class="hd-table">
+         <thead>
+           <tr>
+             <th>Metric</th>
+             <th class="numeric-header">Current (#%s)</th>
+             <th class="numeric-header">Baseline (#%s)</th>
+             <th class="numeric-header">Delta</th>
+           </tr>
+         </thead>
+         <tbody>
+           <tr>
+             <td style="font-weight:600;">Max Users</td>
+             <td class="numeric-cell">%s VU</td>
+             <td class="numeric-cell">%s VU</td>
+             <td class="numeric-cell">%s</td>
+           </tr>
+           <tr>
+             <td style="font-weight:600;">Total Aggregate Throughput</td>
+             <td class="numeric-cell">%.2f TPS</td>
+             <td class="numeric-cell">%.2f TPS</td>
+             <td class="numeric-cell">%s</td>
+           </tr>
+           <tr>
+             <td style="font-weight:600;">%% Error Rate</td>
+             <td class="numeric-cell">%.2f%%</td>
+             <td class="numeric-cell">%.2f%%</td>
+             <td class="numeric-cell">%s</td>
+           </tr>
+           <tr>
+             <td style="font-weight:600;">%s Response Time</td>
+             <td class="numeric-cell">%s ms</td>
+             <td class="numeric-cell">%s ms</td>
+             <td class="numeric-cell">%s</td>
+           </tr>
+           <tr>
+             <td style="font-weight:600;">TPS SLA Pass Rate</td>
+             <td class="numeric-cell">%.2f%%</td>
+             <td class="numeric-cell">%.2f%%</td>
+             <td class="numeric-cell">%s</td>
+           </tr>
+           <tr>
+             <td style="font-weight:600;">%% Error SLA Pass Rate</td>
+             <td class="numeric-cell">%.2f%%</td>
+             <td class="numeric-cell">%.2f%%</td>
+             <td class="numeric-cell">%s</td>
+           </tr>
+           <tr>
+             <td style="font-weight:600;">RT SLA Pass Rate (Labels)</td>
+             <td class="numeric-cell">%.2f%%</td>
+             <td class="numeric-cell">%.2f%%</td>
+             <td class="numeric-cell">%s</td>
+           </tr>
+         </tbody>
+       </table>
+     </div>
+   </div>',
+  current_run_id, baseline_run_id,
+  current_run_id, baseline_run_id,
+  format(current_run$total_users[1], big.mark = ","),
+  format(baseline_run$total_users[1], big.mark = ","),
+  delta_text(current_run$total_users[1], baseline_run$total_users[1]),
+  current_run$throughput[1],
+  baseline_run$throughput[1],
+  delta_text(current_run$throughput[1], baseline_run$throughput[1]),
+  current_run$error_rate[1],
+  baseline_run$error_rate[1],
+  delta_text(current_run$error_rate[1], baseline_run$error_rate[1], lower_is_better = TRUE),
+  rt_metric_name,
+  format(current_run$pct_rt[1], big.mark = ","),
+  format(baseline_run$pct_rt[1], big.mark = ","),
+  delta_text(current_run$pct_rt[1], baseline_run$pct_rt[1], lower_is_better = TRUE),
+  current_tps_pass_rate, baseline_tps_pass_rate,
+  delta_text(current_tps_pass_rate, baseline_tps_pass_rate),
+  current_err_pass_rate, baseline_err_pass_rate,
+  delta_text(current_err_pass_rate, baseline_err_pass_rate),
+  current_rt_pass_rate, baseline_rt_pass_rate,
+  delta_text(current_rt_pass_rate, baseline_rt_pass_rate)
+)
+
+bot_grid_html <- sprintf('<div class="hd-grid-2col">%s%s</div>', left_error_card_html, right_scorecard_card_html)
+
+# ============================================================
+# 8. UNIFIED INTERACTIVE DRILLDOWN MODALS
+#    0) Executive High-Level Charts Modal (openChartsModal)
+#    A) SLA Status Evaluation Summary Modal (openSlaModal)
+#    B) Scenario Health Details Modal (openScenarioModal)
+#    C) Labels Met SLA / Response Time Breakdown Modal (openLabelModal)
+#    D) HTTP Error Codes & Error Messages Modal (openErrorModal)
+# ============================================================
+
+# ---- 8.0 Build Lightweight Pure-SVG Executive Charts ----
+ts_cur  <- if (exists("db_timeseries")) db_timeseries %>% filter(run_id == current_run_id) %>% arrange(elapsed_min) else tibble()
+ts_base <- if (exists("db_timeseries")) db_timeseries %>% filter(run_id == baseline_run_id) %>% arrange(elapsed_min) else tibble()
+
+build_svg_dual_line_chart <- function(cur_df, base_df, y_col, y_label, unit_str = "",
+                                      cur_color = "#2563EB", base_color = "#64748B",
+                                      ref_val = NULL, ref_label = NULL,
+                                      sec_col = NULL, sec_label = NULL,
+                                      svg_w = 520, svg_h = 195) {
+  if (nrow(cur_df) == 0) {
+    return("<p style='color:#64748B;font-size:11px;padding:12px;'>No time-series data available.</p>")
+  }
+  pad_l <- 46; pad_r <- if (!is.null(sec_col)) 42 else 18; pad_t <- 16; pad_b <- 26
+  plot_w <- svg_w - pad_l - pad_r
+  plot_h <- svg_h - pad_t - pad_b
+
+  max_x <- max(c(cur_df$elapsed_min, if (nrow(base_df) > 0) base_df$elapsed_min else 1, 1), na.rm = TRUE)
+  all_y <- c(cur_df[[y_col]], if (nrow(base_df) > 0) base_df[[y_col]] else numeric(0), if (!is.null(ref_val)) ref_val else numeric(0))
+  max_y <- max(c(all_y * 1.12, 1), na.rm = TRUE)
+
+  scale_x <- function(x) round(pad_l + (x / max_x) * plot_w, 1)
+  scale_y <- function(y) round(pad_t + plot_h - (pmin(pmax(y, 0), max_y) / max_y) * plot_h, 1)
+
+  # Horizontal gridlines & Y ticks (4 steps)
+  y_ticks <- seq(0, max_y, length.out = 5)
+  grid_svg <- paste(sapply(y_ticks, function(yv) {
+    yp <- scale_y(yv)
+    lbl <- if (yv >= 1000) format(round(yv, 0), big.mark = ",") else round(yv, 1)
+    sprintf(
+      "<line x1='%d' y1='%s' x2='%d' y2='%s' stroke='#F1F5F9' stroke-width='1'/><text x='%d' y='%s' text-anchor='end' fill='#64748B' font-size='9.5' font-family='Consolas,monospace'>%s</text>",
+      pad_l, yp, pad_l + plot_w, yp, pad_l - 5, yp + 3, lbl
+    )
+  }), collapse = "")
+
+  # X-axis ticks
+  x_ticks <- unique(round(seq(0, max_x, length.out = 6)))
+  x_svg <- paste(sapply(x_ticks, function(xv) {
+    xp <- scale_x(xv)
+    sprintf(
+      "<line x1='%s' y1='%d' x2='%s' y2='%d' stroke='#CBD5E1' stroke-width='1'/><text x='%s' y='%d' text-anchor='middle' fill='#64748B' font-size='9.5' font-family='Consolas,monospace'>%dm</text>",
+      xp, pad_t + plot_h, xp, pad_t + plot_h + 4, xp, pad_t + plot_h + 15, xv
+    )
+  }), collapse = "")
+
+  # Optional secondary backdrop area (e.g. Active Users)
+  sec_svg <- ""
+  if (!is.null(sec_col) && sec_col %in% names(cur_df)) {
+    max_sec <- max(c(cur_df[[sec_col]] * 1.15, 1), na.rm = TRUE)
+    scale_sec_y <- function(y) round(pad_t + plot_h - (pmin(pmax(y, 0), max_sec) / max_sec) * plot_h, 1)
+    pts_sec <- paste(sprintf("%s,%s", scale_x(cur_df$elapsed_min), scale_sec_y(cur_df[[sec_col]])), collapse = " ")
+    poly_sec <- sprintf("%s,%d %s %s,%d", scale_x(min(cur_df$elapsed_min)), pad_t + plot_h, pts_sec, scale_x(max(cur_df$elapsed_min)), pad_t + plot_h)
+    sec_ticks <- seq(0, max_sec, length.out = 3)
+    sec_axis <- paste(sapply(sec_ticks, function(sv) {
+      yp <- scale_sec_y(sv)
+      sprintf("<text x='%d' y='%s' text-anchor='start' fill='#6366F1' font-size='9' font-family='Consolas,monospace'>%d VU</text>",
+              pad_l + plot_w + 4, yp + 3, round(sv))
+    }), collapse = "")
+    sec_svg <- sprintf("<polygon points='%s' fill='#EEF2FF' opacity='0.75'/><polyline points='%s' fill='none' stroke='#A5B4FC' stroke-width='1.2' stroke-dasharray='2,2'/>%s",
+                       poly_sec, pts_sec, sec_axis)
   }
 
-  tooltip
+  # Baseline polyline
+  base_svg <- ""
+  if (nrow(base_df) > 0 && has_baseline) {
+    pts_b <- paste(sprintf("%s,%s", scale_x(base_df$elapsed_min), scale_y(base_df[[y_col]])), collapse = " ")
+    base_svg <- sprintf("<polyline points='%s' fill='none' stroke='%s' stroke-width='1.6' stroke-dasharray='4,3' opacity='0.85'/>", pts_b, base_color)
+  }
 
-}
-
-top_errors <- error_summary %>%
-  slice_head(n = 10)
-
-error_title <- "Top Error Contributors"
-
-if (nrow(error_summary) > 0) {
-
-  error_title <- sprintf(
-    "Top %s of %s Error Contributors",
-    nrow(top_errors),
-    nrow(error_summary)
+  # Current area + polyline
+  pts_c <- paste(sprintf("%s,%s", scale_x(cur_df$elapsed_min), scale_y(cur_df[[y_col]])), collapse = " ")
+  poly_c <- sprintf("%s,%d %s %s,%d", scale_x(min(cur_df$elapsed_min)), pad_t + plot_h, pts_c, scale_x(max(cur_df$elapsed_min)), pad_t + plot_h)
+  cur_svg <- sprintf(
+    "<polygon points='%s' fill='%s' opacity='0.10'/><polyline points='%s' fill='none' stroke='%s' stroke-width='2.2'/>",
+    poly_c, cur_color, pts_c, cur_color
   )
 
+  # Optional SLA reference line
+  ref_svg <- ""
+  if (!is.null(ref_val) && !is.na(ref_val) && ref_val > 0 && ref_val <= max_y) {
+    ry <- scale_y(ref_val)
+    ref_svg <- sprintf(
+      "<line x1='%d' y1='%s' x2='%d' y2='%s' stroke='#DC2626' stroke-width='1.3' stroke-dasharray='5,3'/><text x='%d' y='%s' text-anchor='end' fill='#DC2626' font-size='9.5' font-weight='700' font-family='Consolas,monospace'>%s</text>",
+      pad_l, ry, pad_l + plot_w, ry, pad_l + plot_w - 4, max(ry - 4, pad_t + 8), ifelse(is.null(ref_label), "SLA", ref_label)
+    )
+  }
+
+  sprintf(
+    "<svg viewBox='0 0 %d %d' style='width:100%%;height:auto;display:block;overflow:visible;'>
+       %s
+       %s
+       <line x1='%d' y1='%d' x2='%d' y2='%d' stroke='#CBD5E1' stroke-width='1'/>
+       <line x1='%d' y1='%d' x2='%d' y2='%d' stroke='#CBD5E1' stroke-width='1'/>
+       %s
+       %s
+       %s
+       %s
+     </svg>",
+    svg_w, svg_h,
+    grid_svg,
+    sec_svg,
+    pad_l, pad_t, pad_l, pad_t + plot_h,
+    pad_l, pad_t + plot_h, pad_l + plot_w, pad_t + plot_h,
+    x_svg,
+    base_svg,
+    cur_svg,
+    ref_svg
+  )
 }
 
-error_rows <- paste(
-  apply(
-    top_errors,
-    1,
-    function(r) {
-
-      transaction_errors <- error_details %>%
-        filter(
-          app_name == r["app_name"],
-          label == r["label"]
-        )
-
-      tooltip_text <- build_error_tooltip(
-        transaction_errors
-      )
-
-      tooltip_text <- gsub(
-        "'",
-        "&apos;",
-        tooltip_text
-      )
-
-      sprintf(
-        "
-        <tr>
-          <td>%s</td>
-
-          <td>
-            %s
-            <i class='fa fa-info-circle breach-tooltip'
-               title='%s'>
-            </i>
-          </td>
-
-          <td class='numeric-cell'>%s</td>
-
-          <td class='numeric-cell'>%s</td>
-
-          <td class='numeric-cell'>%s%%</td>
-        </tr>
-        ",
-        r["app_name"],
-        r["label"],
-        tooltip_text,
-        format(
-          as.numeric(r["total_transactions"]),
-          big.mark = ","
-        ),
-        format(
-          as.numeric(r["errors"]),
-          big.mark = ","
-        ),
-        sprintf(
-          "%.2f",
-          as.numeric(r["error_rate"])
-        )
-      )
-
-    }
-  ),
-  collapse = ""
+# Chart 1: P95 Response Time Over Time (Current vs Baseline)
+chart1_svg <- build_svg_dual_line_chart(
+  cur_df = ts_cur, base_df = ts_base, y_col = "pct_rt", y_label = "ms",
+  cur_color = "#2563EB", base_color = "#64748B",
+  ref_val = rt_default, ref_label = paste0("SLA: ", rt_default, " ms")
 )
 
-if (nrow(error_summary) == 0) {
+chart1_card_html <- sprintf(
+  '<div class="hd-chart-card">
+     <div class="hd-chart-card-header">
+       <h4 class="hd-chart-card-title">⏱ %s Response Time Timeline (1-Min Intervals)</h4>
+       <div class="hd-chart-legend">
+         <span><span class="hd-legend-line" style="background:#2563EB;"></span>Current (#%s)</span>
+         <span><span class="hd-legend-line" style="background:#64748B;border-top:2px dashed #64748B;height:0;"></span>Baseline (#%s)</span>
+         <span style="color:#DC2626;"><span class="hd-legend-line" style="background:#DC2626;"></span>SLA (%s ms)</span>
+       </div>
+     </div>
+     %s
+   </div>',
+  rt_metric_name, current_run_id, baseline_run_id, format(rt_default, big.mark = ","), chart1_svg
+)
 
-  error_card <- '
-  <div style="
-      flex:1;
-      background:#f8f9fa;
-      border:1px solid #dee2e6;
-      border-radius:4px;
-      padding:14px;
-  ">
+# Chart 2: Throughput (TPS) & Virtual User Concurrency Profile Over Time
+chart2_svg <- build_svg_dual_line_chart(
+  cur_df = ts_cur, base_df = ts_base, y_col = "tps", y_label = "TPS",
+  cur_color = "#16A34A", base_color = "#64748B",
+  sec_col = "active_users", sec_label = "Active VUs"
+)
 
-    <h3 class="section-header">
-      Error Summary
-    </h3>
+chart2_card_html <- sprintf(
+  '<div class="hd-chart-card">
+     <div class="hd-chart-card-header">
+       <h4 class="hd-chart-card-title">🚀 Throughput (TPS) &amp; Virtual User Concurrency Profile</h4>
+       <div class="hd-chart-legend">
+         <span><span class="hd-legend-line" style="background:#16A34A;"></span>Current TPS (#%s)</span>
+         <span><span class="hd-legend-line" style="background:#64748B;border-top:2px dashed #64748B;height:0;"></span>Baseline TPS (#%s)</span>
+         <span style="color:#6366F1;"><span class="hd-legend-dot" style="background:#C7D2FE;"></span>Active VUs (Peak: %s)</span>
+       </div>
+     </div>
+     %s
+   </div>',
+  current_run_id, baseline_run_id, vu_actual, chart2_svg
+)
 
-    <p class="status-pass">
-      ✓ No transaction errors detected during the test run.
-    </p>
+# Chart 3: Scenario P95 Response Time & Throughput (Current vs Baseline)
+base_scen_df <- db_logical_scenario_summary %>%
+  filter(run_id == baseline_run_id) %>%
+  select(app_name, logical_scenario, base_pct_rt = pct_rt, base_tps = throughput, base_req = requests)
 
-  </div>
-  '
+scen_comp_df <- logical_health_df %>%
+  left_join(base_scen_df, by = c("app_name", "logical_scenario"))
 
-} else {
+max_scen_rt <- max(c(scen_comp_df$pct_rt, scen_comp_df$base_pct_rt, rt_default, 1), na.rm = TRUE) * 1.1
 
-  error_card <- sprintf(
-  '
-  <div style="
-      flex:1;
-      background:#f8f9fa;
-      border:1px solid #dee2e6;
-      border-radius:4px;
-      padding:14px;
-  ">
+scen_bars_html <- paste(
+  lapply(seq_len(nrow(scen_comp_df)), function(i) {
+    s <- scen_comp_df[i, ]
+    cur_w  <- max(round((s$pct_rt / max_scen_rt) * 100, 1), 2)
+    base_v <- ifelse(is.na(s$base_pct_rt), 0, s$base_pct_rt)
+    base_w <- max(round((base_v / max_scen_rt) * 100, 1), 2)
+    sla_pos <- round((rt_default / max_scen_rt) * 100, 1)
+    cur_col <- if (isTRUE(s$logical_rt_passed)) "#16A34A" else "#DC2626"
+    delta_b <- inline_delta_badge(s$pct_rt, base_v, lower_is_better = TRUE)
 
-    <h3 class="section-header">%s</h3>
+    sprintf(
+      "<div style='margin-bottom:10px;'>
+         <div style='display:flex;justify-content:space-between;align-items:center;font-size:11px;margin-bottom:3px;'>
+           <span style='font-family:Consolas,monospace;font-weight:700;color:#0F172A;'>%s <span style='color:#64748B;font-weight:500;'>(%.2f TPS vs %.2f Base TPS)</span></span>
+           <span><strong style='color:%s;'>%s ms</strong> vs <span style='color:#64748B;'>%s ms Base</span> %s</span>
+         </div>
+         <div style='position:relative;background:#F1F5F9;border-radius:4px;padding:4px 6px;display:flex;flex-direction:column;gap:4px;'>
+           <div style='position:absolute;left:%s%%;top:0;bottom:0;border-left:1.5px dashed #DC2626;z-index:2;'></div>
+           <div style='display:flex;align-items:center;gap:6px;'>
+             <span style='font-size:9.5px;font-weight:700;color:#334155;width:48px;'>Current</span>
+             <div style='flex:1;background:#E2E8F0;height:8px;border-radius:3px;overflow:hidden;'>
+               <div style='width:%s%%;height:100%%;background:%s;border-radius:3px;'></div>
+             </div>
+           </div>
+           <div style='display:flex;align-items:center;gap:6px;'>
+             <span style='font-size:9.5px;font-weight:600;color:#64748B;width:48px;'>Baseline</span>
+             <div style='flex:1;background:#E2E8F0;height:6px;border-radius:3px;overflow:hidden;'>
+               <div style='width:%s%%;height:100%%;background:#64748B;border-radius:3px;'></div>
+             </div>
+           </div>
+         </div>
+       </div>",
+      s$logical_scenario, s$throughput, ifelse(is.na(s$base_tps), 0, s$base_tps),
+      cur_col, format(round(s$pct_rt), big.mark = ","), format(round(base_v), big.mark = ","), delta_b,
+      sla_pos,
+      cur_w, cur_col,
+      base_w
+    )
+  }),
+  collapse = "\n"
+)
 
-    <table class="scorecard-table">
+chart3_card_html <- sprintf(
+  '<div class="hd-chart-card">
+     <div class="hd-chart-card-header">
+       <h4 class="hd-chart-card-title">🧭 Scenario %s Response Time: Current vs Baseline</h4>
+       <div class="hd-chart-legend">
+         <span><span class="hd-legend-dot" style="background:#DC2626;"></span>Breached SLA</span>
+         <span><span class="hd-legend-dot" style="background:#16A34A;"></span>Passed SLA</span>
+         <span><span class="hd-legend-dot" style="background:#64748B;"></span>Baseline</span>
+       </div>
+     </div>
+     <div style="padding-top:4px;">%s</div>
+   </div>',
+  rt_metric_name, scen_bars_html
+)
 
-      <tr>
-        <th>Application</th>
-        <th>Transaction</th>
-        <th class="numeric-header">Total Transactions</th>
-        <th class="numeric-header">Error Count</th>
-        <th class="numeric-header">Error Rate</th>
-      </tr>
+# Chart 4: Error Timeline (Errors/Min) & Top Failing Transactions Pareto
+chart4_err_svg <- build_svg_dual_line_chart(
+  cur_df = ts_cur, base_df = ts_base, y_col = "failed_tx", y_label = "Errors",
+  cur_color = "#DC2626", base_color = "#64748B",
+  svg_w = 520, svg_h = 115
+)
 
-      %s
-
-    </table>
-
-  </div>
-  ',
-  error_title,
-  error_rows
+pareto_top5 <- error_summary_cur %>%
+  slice_head(n = 5) %>%
+  mutate(
+    share_pct = if (total_run_errors > 0) round((errors / total_run_errors) * 100, 1) else 0,
+    cum_pct   = round(cumsum(share_pct), 1)
   )
 
-}
-
-# ============================================================
-# TOP BREACHES
-# ============================================================
-
-top_breach_section <- ""
-
-if (!is.null(rt_summary) &&
-    rt_summary$failed_count > 0) {
-
-  top_breach_section <- paste0( 
-    "<ul>",
-    paste(
+pareto_bars_html <- if (nrow(pareto_top5) > 0) {
+  paste(
+    lapply(seq_len(nrow(pareto_top5)), function(i) {
+      p <- pareto_top5[i, ]
       sprintf(
-        "<li>%s<br/><span class='executive-subtext'>Actual: %sms | SLA: %sms | Breach: %s%%</span></li>",
-        rt_summary$top_breaches$label,
-        rt_summary$top_breaches$actual_rt,
-        rt_summary$top_breaches$threshold,
-        rt_summary$top_breaches$breach_pct
+        "<div style='display:flex;align-items:center;gap:6px;font-size:10.5px;margin-bottom:3px;'>
+           <span style='font-family:Consolas,monospace;font-weight:600;color:#1E293B;width:210px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'>%s</span>
+           <div style='flex:1;background:#F1F5F9;height:7px;border-radius:3px;overflow:hidden;'>
+             <div style='width:%s%%;height:100%%;background:#DC2626;border-radius:3px;'></div>
+           </div>
+           <span style='font-family:Consolas,monospace;font-weight:700;color:#DC2626;width:95px;text-align:right;'>%s (%s%% | Σ%s%%)</span>
+         </div>",
+        p$label, p$share_pct, format(p$errors, big.mark = ","), p$share_pct, p$cum_pct
+      )
+    }),
+    collapse = "\n"
+  )
+} else {
+  "<div style='color:#16A34A;font-size:11px;'>✓ Zero errors recorded.</div>"
+}
+
+chart4_card_html <- sprintf(
+  '<div class="hd-chart-card">
+     <div class="hd-chart-card-header">
+       <h4 class="hd-chart-card-title">⚠️ Error Spike Timeline (Errors/Min) &amp; Top 5 Pareto Share</h4>
+       <div class="hd-chart-legend">
+         <span><span class="hd-legend-line" style="background:#DC2626;"></span>Current Errors/Min (#%s)</span>
+         <span><span class="hd-legend-line" style="background:#64748B;border-top:2px dashed #64748B;height:0;"></span>Baseline (#%s)</span>
+       </div>
+     </div>
+     %s
+     <div style="border-top:1px solid #F1F5F9;padding-top:4px;margin-top:2px;">
+       <div style="font-size:10px;font-weight:700;color:#64748B;text-transform:uppercase;margin-bottom:3px;">Top 5 Error Pareto (Count | %% Share | Cumulative Σ%%)</div>
+       %s
+     </div>
+   </div>',
+  current_run_id, baseline_run_id, chart4_err_svg, pareto_bars_html
+)
+
+charts_tabs_html <- paste0(
+  '<button type="button" class="hd-modal-tab-btn" data-tab-id="GRID" onclick="openChartsModal(\'GRID\')">📊 Executive 2x2 Grid</button>',
+  '<button type="button" class="hd-modal-tab-btn" data-tab-id="TIMELINE" onclick="openChartsModal(\'TIMELINE\')">⏱ Latency &amp; Load Timelines</button>',
+  '<button type="button" class="hd-modal-tab-btn" data-tab-id="SCENARIOS" onclick="openChartsModal(\'SCENARIOS\')">🧭 Scenario vs Baseline</button>',
+  '<button type="button" class="hd-modal-tab-btn" data-tab-id="ERRORS" onclick="openChartsModal(\'ERRORS\')">⚠️ Error Timeline &amp; Pareto</button>'
+)
+
+hidden_charts_html <- paste(
+  sprintf('<div id="charts-tabs-template" style="display:none;">%s</div>', charts_tabs_html),
+  sprintf('<div id="charts-data-GRID" style="display:none;"><div class="hd-chart-grid-2x2">%s%s%s%s</div></div>',
+          chart1_card_html, chart2_card_html, chart3_card_html, chart4_card_html),
+  sprintf('<div id="charts-data-TIMELINE" style="display:none;"><div class="hd-chart-grid-2x2">%s%s</div></div>',
+          chart1_card_html, chart2_card_html),
+  sprintf('<div id="charts-data-SCENARIOS" style="display:none;">%s</div>', chart3_card_html),
+  sprintf('<div id="charts-data-ERRORS" style="display:none;">%s</div>', chart4_card_html),
+  sep = "\n"
+)
+
+# ---- 8A. Build SLA Status Evaluation Summary Tables ----
+render_modal_sla_table <- function(df, show_app_col = FALSE) {
+  if (nrow(df) == 0) {
+    return("<p style='color:#6c757d; padding:12px 0;'>No SLA evaluation data available.</p>")
+  }
+  rows_list <- lapply(seq_len(nrow(df)), function(i) {
+    r <- df[i, ]
+    app_id_safe <- safe_dom_id(r$app_name)
+    app_td <- if (show_app_col) sprintf("<td rowspan='4' style='font-weight:700;vertical-align:middle;border-right:1px solid #E2E8F0;'>%s</td>", r$app_name) else ""
+
+    tp_status_b <- if (isTRUE(r$throughput_pass)) "<span class='status-pass'>✅ PASS</span>" else "<span class='status-fail'>❌ FAIL</span>"
+    er_status_b <- if (isTRUE(r$error_pass)) "<span class='status-pass'>✅ PASS</span>" else "<span class='status-fail'>❌ FAIL</span>"
+    sc_status_b <- if (isTRUE(r$scenario_pass)) "<span class='status-pass'>✅ PASS</span>" else "<span class='status-fail'>❌ FAIL</span>"
+    lb_passed   <- ifelse(is.na(r$breach_count), 0, r$breach_count) == 0
+    lb_status_b <- if (lb_passed) "<span class='status-pass'>✅ PASS</span>" else "<span class='status-fail'>❌ FAIL</span>"
+
+    tp_summary <- if (isTRUE(r$throughput_pass)) {
+      sprintf("Achieved %.2f TPS against >= %.2f TPS target.", r$throughput, r$throughput_target)
+    } else {
+      sprintf("Below throughput target by %.2f TPS (Actual: %.2f TPS vs Target: >= %.2f TPS).", r$throughput_target - r$throughput, r$throughput, r$throughput_target)
+    }
+
+    app_err_tx_cnt <- nrow(error_summary_cur %>% filter(app_name == r$app_name))
+    app_err_tot    <- sum((error_summary_cur %>% filter(app_name == r$app_name))$errors, na.rm = TRUE)
+    er_summary <- sprintf(
+      "%s total errors across %d failing transactions. <button type='button' class='hd-modal-btn' style='margin-left:6px;' onclick=\"openErrorModal('ALL')\">Inspect HTTP Errors 🔍</button>",
+      format(app_err_tot, big.mark = ","), app_err_tx_cnt
+    )
+
+    sc_summary <- sprintf(
+      "%d of %d scenarios passed %s Response Time SLA (%d failed). <button type='button' class='hd-modal-btn' style='margin-left:6px;' onclick=\"openScenarioModal('%s')\">Inspect Scenarios 🔍</button>",
+      r$logical_passed, r$logical_total, rt_metric_name, r$logical_failed, app_id_safe
+    )
+
+    tot_lbl <- ifelse(is.na(r$total_app_labels), 0L, r$total_app_labels)
+    pas_lbl <- ifelse(is.na(r$passed_app_labels), 0L, r$passed_app_labels)
+    brc_lbl <- ifelse(is.na(r$breach_count), 0L, r$breach_count)
+    worst_str <- if (brc_lbl > 0 && !is.na(r$worst_label) && r$worst_label != "-") {
+      sprintf("Worst breach: <code>%s</code> (%s ms vs %s ms SLA).",
+              r$worst_label, format(round(r$worst_actual), big.mark = ","), format(round(r$worst_sla), big.mark = ","))
+    } else {
+      "All transaction labels met configured SLA thresholds."
+    }
+    lb_summary <- sprintf(
+      "%d of %d labels met SLA (%d breaches). %s <button type='button' class='hd-modal-btn' style='margin-left:6px;' onclick=\"openLabelModal('BREACHES')\">Inspect Labels 🔍</button>",
+      pas_lbl, tot_lbl, brc_lbl, worst_str
+    )
+
+    paste0(
+      sprintf(
+        "<tr>%s<td style='font-weight:600;'>Throughput SLA</td><td style='text-align:center;'>%s</td><td class='numeric-cell'>&gt;= %.2f TPS</td><td class='numeric-cell'>%.2f TPS %s</td><td>%s</td></tr>",
+        app_td, tp_status_b, r$throughput_target, r$throughput,
+        inline_delta_badge(r$throughput, r$base_throughput, lower_is_better = FALSE), tp_summary
       ),
-      collapse = ""
-    ),
-    "</ul>"
-  )
-}
+      sprintf(
+        "<tr><td style='font-weight:600;'>Error Rate SLA</td><td style='text-align:center;'>%s</td><td class='numeric-cell'>&lt;= %.2f%%</td><td class='numeric-cell'>%.2f%% %s</td><td>%s</td></tr>",
+        er_status_b, r$error_target, r$error_rate,
+        inline_delta_badge(r$error_rate, r$base_error_rate, lower_is_better = TRUE), er_summary
+      ),
+      sprintf(
+        "<tr><td style='font-weight:600;'>Scenario %s RT SLA</td><td style='text-align:center;'>%s</td><td class='numeric-cell'>%d of %d Scenarios</td><td class='numeric-cell'>%s ms %s</td><td>%s</td></tr>",
+        rt_metric_name, sc_status_b, r$logical_total, r$logical_total,
+        format(round(r$pct_rt), big.mark = ","),
+        inline_delta_badge(r$pct_rt, r$base_pct_rt, lower_is_better = TRUE), sc_summary
+      ),
+      sprintf(
+        "<tr><td style='font-weight:600;'>Transaction Label %s RT SLA</td><td style='text-align:center;'>%s</td><td class='numeric-cell'>%d of %d Labels</td><td class='numeric-cell'>%d Passed / %d Breached</td><td>%s</td></tr>",
+        rt_metric_name, lb_status_b, tot_lbl, tot_lbl, pas_lbl, brc_lbl, lb_summary
+      )
+    )
+  })
 
-breach_title <- "Top Response Time Breaches"
-
-if (
-  !is.null(rt_summary) &&
-  rt_summary$failed_count > 0
-) {
-
-  breach_title <- sprintf(
-    "Top %s of %s Response Time Breaches",
-    nrow(rt_summary$top_breaches),
-    rt_summary$failed_count
-  )
-
-}
-
-breach_card <- paste0(
-  '<div style="
-      flex:1;
-      background:#f8f9fa;
-      border:1px solid #dee2e6;
-      border-radius:4px;
-      padding:14px;
-    ">',
+  app_th <- if (show_app_col) "<th>Application</th>" else ""
   sprintf(
-    '<h3 class="section-header">%s</h3>',
-    breach_title
+    '<table class="hd-table" style="margin-top:4px;">
+      <thead>
+        <tr>
+          %s
+          <th>SLA Dimension</th>
+          <th style="text-align:center;">Status</th>
+          <th class="numeric-header">Target Threshold</th>
+          <th class="numeric-header">Actual (vs Base)</th>
+          <th>Evaluation Details &amp; Action</th>
+        </tr>
+      </thead>
+      <tbody>%s</tbody>
+    </table>',
+    app_th, paste(rows_list, collapse = "\n")
+  )
+}
+
+sla_tabs_html <- sprintf(
+  '<button type="button" class="hd-modal-tab-btn" data-tab-id="ALL" onclick="openSlaModal(\'ALL\')">All Applications</button>%s',
+  paste(sapply(unique(app_health$app_name), function(app) {
+    safe_id <- safe_dom_id(app)
+    sprintf('<button type="button" class="hd-modal-tab-btn" data-tab-id="%s" onclick="openSlaModal(\'%s\')">%s</button>', safe_id, safe_id, app)
+  }), collapse = "")
+)
+
+hidden_sla_html <- paste(
+  c(
+    sprintf('<div id="sla-tabs-template" style="display:none;">%s</div>', sla_tabs_html),
+    sprintf('<div id="sla-data-ALL" style="display:none;">%s</div>', render_modal_sla_table(app_health, show_app_col = TRUE)),
+    sapply(unique(app_health$app_name), function(app) {
+      safe_id <- safe_dom_id(app)
+      sub_df  <- app_health %>% filter(app_name == app)
+      sprintf('<div id="sla-data-%s" style="display:none;">%s</div>', safe_id, render_modal_sla_table(sub_df, show_app_col = FALSE))
+    })
   ),
-  top_breach_section,
+  collapse = "\n"
+)
+
+# ---- 8B. Build Scenario Health Details Tables ----
+render_modal_scenario_table <- function(df, show_app_col = FALSE) {
+  if (nrow(df) == 0) {
+    return("<p style='color:#6c757d; padding:12px 0;'>No scenario details available.</p>")
+  }
+  rows <- sapply(seq_len(nrow(df)), function(i) {
+    row <- df[i, ]
+    scen_id_safe <- safe_dom_id(row$logical_scenario)
+    scen_status_badge <- if (isTRUE(row$scenario_passed)) "<span class='status-pass'>PASS</span>" else "<span class='status-fail'>FAIL</span>"
+    req_fmt   <- format(row$requests, big.mark = ",")
+    tps_fmt   <- sprintf("%.2f TPS", row$throughput)
+    p95_badge <- metric_badge(sprintf("%s ms", format(round(row$pct_rt), big.mark = ",")), row$scenario_rt_passed)
+
+    lbl_text <- if (!is.na(row$total_labels) && row$total_labels > 0) {
+      lbl_badge <- metric_badge(sprintf("%d of %d", row$passed_labels, row$total_labels), row$scenario_rt_passed)
+      sprintf("<button type='button' class='hd-modal-btn' onclick=\"openLabelModal('%s')\">%s 🔍</button>", scen_id_safe, lbl_badge)
+    } else "<span class='status-na'>N/A</span>"
+
+    err_badge <- metric_badge(sprintf("%.2f%%", row$error_rate), row$error_passed)
+    app_td    <- if (show_app_col) sprintf("<td><strong>%s</strong></td>", row$app_name) else ""
+
+    sprintf(
+      "<tr style='cursor:pointer;' onclick=\"if(!event.target.closest('button, a')) openLabelModal('%s')\">%s<td style='font-family:monospace;font-size:11.5px;font-weight:600;'>%s</td><td style='text-align:center;'>%s</td><td class='numeric-cell'>%s</td><td class='numeric-cell'>%s</td><td class='numeric-cell'>%s</td><td style='text-align:center;'>%s</td><td class='numeric-cell'>%s</td></tr>",
+      scen_id_safe, app_td, row$logical_scenario, scen_status_badge, req_fmt, tps_fmt, p95_badge, lbl_text, err_badge
+    )
+  })
+
+  app_th <- if (show_app_col) "<th>Application</th>" else ""
+  sprintf(
+    '<table class="hd-table" style="margin-top:4px;">
+      <thead>
+        <tr>
+          %s
+          <th>Scenario</th>
+          <th style="text-align:center;">Status</th>
+          <th class="numeric-header">Requests</th>
+          <th class="numeric-header">Avg. Throughput</th>
+          <th class="numeric-header">%s</th>
+          <th style="text-align:center;">Labels Met RT SLA</th>
+          <th class="numeric-header">Error Rate</th>
+        </tr>
+      </thead>
+      <tbody>%s</tbody>
+    </table>',
+    app_th, rt_column_title, paste(rows, collapse = "\n")
+  )
+}
+
+scenario_tabs_html <- sprintf(
+  '<button type="button" class="hd-modal-tab-btn" data-tab-id="ALL" onclick="openScenarioModal(\'ALL\')">All Applications</button>%s',
+  paste(sapply(unique(app_health$app_name), function(app) {
+    safe_id <- safe_dom_id(app)
+    sprintf('<button type="button" class="hd-modal-tab-btn" data-tab-id="%s" onclick="openScenarioModal(\'%s\')">%s</button>', safe_id, safe_id, app)
+  }), collapse = "")
+)
+
+hidden_scenario_html <- paste(
+  c(
+    sprintf('<div id="scenario-tabs-template" style="display:none;">%s</div>', scenario_tabs_html),
+    sprintf('<div id="scenario-data-ALL" style="display:none;">%s</div>', render_modal_scenario_table(scenario_health_df, show_app_col = TRUE)),
+    sapply(unique(app_health$app_name), function(app) {
+      safe_id <- safe_dom_id(app)
+      sub_df  <- scenario_health_df %>% filter(app_name == app)
+      sprintf('<div id="scenario-data-%s" style="display:none;">%s</div>', safe_id, render_modal_scenario_table(sub_df, show_app_col = FALSE))
+    })
+  ),
+  collapse = "\n"
+)
+
+# ---- 8C. Build Labels Met SLA / Response Time Breakdown Tables ----
+render_modal_label_table <- function(df, show_scen_col = TRUE) {
+  if (nrow(df) == 0) {
+    return("<p style='color:#16A34A; font-weight:600; padding:12px 0;'>✓ No breaching labels in this view.</p>")
+  }
+  df_sorted <- df %>% arrange(passed, desc(breach_pct), desc(actual_rt))
+  rows <- sapply(seq_len(nrow(df_sorted)), function(i) {
+    r <- df_sorted[i, ]
+    st_badge <- if (isTRUE(r$passed)) "<span class='status-pass'>PASS</span>" else "<span class='status-fail'>FAIL</span>"
+    rt_badge <- metric_badge(sprintf("%s ms", format(round(r$actual_rt), big.mark = ",")), r$passed)
+    variance_badge <- if (!isTRUE(r$passed)) {
+      sprintf("<span class='hd-delta-inline hd-delta-fail'>▲ +%s%%</span>", format(r$breach_pct, nsmall = 1))
+    } else {
+      sprintf("<span class='hd-delta-inline hd-delta-pass'>▼ %s%%</span>", format(r$breach_pct, nsmall = 1))
+    }
+    scen_td <- if (show_scen_col) sprintf("<td style='font-family:monospace;font-size:11px;font-weight:600;'>%s</td>", r$logical_scenario) else ""
+    req_str <- if (!is.na(r$tx_count)) format(r$tx_count, big.mark = ",") else "—"
+    err_str <- if (!is.na(r$error_rate)) sprintf("%.2f%%", r$error_rate) else "0.00%"
+
+    sprintf(
+      "<tr>%s<td style='font-family:monospace;font-size:11px;font-weight:600;'>%s</td><td style='text-align:center;'>%s</td><td class='numeric-cell'>%s</td><td class='numeric-cell'>%s</td><td class='numeric-cell' style='color:#64748B;'>%s ms</td><td class='numeric-cell'>%s</td><td class='numeric-cell'>%s</td></tr>",
+      scen_td, r$label, st_badge, req_str, rt_badge,
+      format(round(r$threshold), big.mark = ","),
+      variance_badge, err_str
+    )
+  })
+
+  scen_th <- if (show_scen_col) "<th>Scenario</th>" else ""
+  sprintf(
+    '<table class="hd-table" style="margin-top:4px;">
+      <thead>
+        <tr>
+          %s
+          <th>Transaction Label</th>
+          <th style="text-align:center;">SLA Status</th>
+          <th class="numeric-header">Requests</th>
+          <th class="numeric-header">Actual (%s)</th>
+          <th class="numeric-header">SLA Threshold</th>
+          <th class="numeric-header">Variance vs SLA</th>
+          <th class="numeric-header">Error Rate</th>
+        </tr>
+      </thead>
+      <tbody>%s</tbody>
+    </table>',
+    scen_th, rt_metric_name, paste(rows, collapse = "\n")
+  )
+}
+
+all_breaches_df <- joined_labels_all %>% filter(!passed)
+label_tabs_html <- sprintf(
+  '<button type="button" class="hd-modal-tab-btn" data-tab-id="BREACHES" onclick="openLabelModal(\'BREACHES\')">All Breaches (%d)</button><button type="button" class="hd-modal-tab-btn" data-tab-id="ALL" onclick="openLabelModal(\'ALL\')">All Labels (%d)</button>%s',
+  nrow(all_breaches_df),
+  nrow(joined_labels_all),
+  paste(sapply(seq_len(nrow(logical_health_df)), function(i) {
+    sc <- logical_health_df$logical_scenario[i]
+    safe_id <- safe_dom_id(sc)
+    sprintf(
+      '<button type="button" class="hd-modal-tab-btn" data-tab-id="%s" onclick="openLabelModal(\'%s\')">%s (%d/%d)</button>',
+      safe_id, safe_id, sc, logical_health_df$passed_labels[i], logical_health_df$total_labels[i]
+    )
+  }), collapse = "")
+)
+
+hidden_label_html <- paste(
+  c(
+    sprintf('<div id="label-tabs-template" style="display:none;">%s</div>', label_tabs_html),
+    sprintf('<div id="label-data-BREACHES" style="display:none;">%s</div>', render_modal_label_table(all_breaches_df, show_scen_col = TRUE)),
+    sprintf('<div id="label-data-ALL" style="display:none;">%s</div>', render_modal_label_table(joined_labels_all, show_scen_col = TRUE)),
+    sapply(unique(logical_health_df$logical_scenario), function(sc) {
+      safe_id <- safe_dom_id(sc)
+      sub_df  <- joined_labels_all %>% filter(logical_scenario == sc)
+      sprintf('<div id="label-data-%s" style="display:none;">%s</div>', safe_id, render_modal_label_table(sub_df, show_scen_col = FALSE))
+    })
+  ),
+  collapse = "\n"
+)
+
+# ---- 8D. Build HTTP Error Codes & Error Messages Tables ----
+label_scen_lookup <- cur_scen_map %>%
+  group_by(app_name, label) %>%
+  summarise(logical_scenario = first(logical_scenario), .groups = "drop")
+
+error_details_enriched <- error_details_cur %>%
+  left_join(error_summary_cur %>% select(app_name, label, total_transactions, tx_errors = errors, tx_error_rate = error_rate),
+            by = c("app_name", "label")) %>%
+  left_join(label_scen_lookup, by = c("app_name", "label")) %>%
+  mutate(
+    logical_scenario = ifelse(is.na(logical_scenario), "-", logical_scenario),
+    http_code_clean  = ifelse(is.na(responseCode) | responseCode %in% c("", "0", "NA", "N/A"), "Non-HTTP", paste0("HTTP ", responseCode)),
+    error_msg_clean  = ifelse(is.na(responseMessage) | responseMessage %in% c("", "0", "NA"), "No error message recorded", responseMessage),
+    share_of_errors  = if (total_run_errors > 0) round((error_count / total_run_errors) * 100, 1) else 0
+  ) %>%
+  arrange(desc(error_count), desc(tx_errors), label)
+
+render_modal_error_table <- function(df) {
+  if (nrow(df) == 0) {
+    return("<p style='color:#16A34A; font-weight:600; padding:12px 0;'>✓ No HTTP or transaction errors recorded.</p>")
+  }
+  rows <- sapply(seq_len(nrow(df)), function(i) {
+    r <- df[i, ]
+    sprintf(
+      "<tr>
+         <td style='font-weight:600;'>%s</td>
+         <td style='font-family:monospace;font-size:11px;'>%s</td>
+         <td style='font-family:monospace;font-size:11px;font-weight:600;'>%s</td>
+         <td style='text-align:center;'><span class='hd-http-badge'>%s</span></td>
+         <td style='font-family:monospace;font-size:11px;color:#1E293B;word-break:break-word;'>%s</td>
+         <td class='numeric-cell' style='font-weight:700;color:#DC2626;'>%s</td>
+         <td class='numeric-cell'>%s</td>
+         <td class='numeric-cell'>%.2f%%</td>
+         <td class='numeric-cell'><span class='hd-delta-inline hd-delta-fail'>%.1f%%</span></td>
+       </tr>",
+      r$app_name,
+      r$logical_scenario,
+      r$label,
+      htmlEscape(r$http_code_clean),
+      htmlEscape(r$error_msg_clean),
+      format(r$error_count, big.mark = ","),
+      format(r$total_transactions, big.mark = ","),
+      r$tx_error_rate,
+      r$share_of_errors
+    )
+  })
+
+  sprintf(
+    '<table class="hd-table" style="margin-top:4px;">
+      <thead>
+        <tr>
+          <th>App</th>
+          <th>Scenario</th>
+          <th>Transaction</th>
+          <th style="text-align:center;">HTTP Code</th>
+          <th>Error / Response Message</th>
+          <th class="numeric-header">Errors</th>
+          <th class="numeric-header">Total Tx</th>
+          <th class="numeric-header">Tx Error Rate</th>
+          <th class="numeric-header">Share of All Errors</th>
+        </tr>
+      </thead>
+      <tbody>%s</tbody>
+    </table>',
+    paste(rows, collapse = "\n")
+  )
+}
+
+error_tabs_html <- sprintf(
+  '<button type="button" class="hd-modal-tab-btn" data-tab-id="ALL" onclick="openErrorModal(\'ALL\')">All Failing Transactions (%d Tx | %s Errors)</button>%s',
+  nrow(error_summary_cur),
+  format(total_run_errors, big.mark = ","),
+  paste(sapply(seq_len(nrow(error_summary_cur)), function(i) {
+    r <- error_summary_cur[i, ]
+    tx_id_safe <- safe_dom_id(paste0(r$app_name, "_", r$label))
+    sprintf(
+      '<button type="button" class="hd-modal-tab-btn" data-tab-id="%s" onclick="openErrorModal(\'%s\')">%s (%s)</button>',
+      tx_id_safe, tx_id_safe, r$label, format(r$errors, big.mark = ",")
+    )
+  }), collapse = "")
+)
+
+hidden_error_html <- paste(
+  c(
+    sprintf('<div id="error-tabs-template" style="display:none;">%s</div>', error_tabs_html),
+    sprintf('<div id="error-data-ALL" style="display:none;">%s</div>', render_modal_error_table(error_details_enriched)),
+    sapply(seq_len(nrow(error_summary_cur)), function(i) {
+      r <- error_summary_cur[i, ]
+      tx_id_safe <- safe_dom_id(paste0(r$app_name, "_", r$label))
+      sub_df <- error_details_enriched %>% filter(app_name == r$app_name, label == r$label)
+      sprintf('<div id="error-data-%s" style="display:none;">%s</div>', tx_id_safe, render_modal_error_table(sub_df))
+    })
+  ),
+  collapse = "\n"
+)
+
+# ---- 8E. Assemble Unified Modal Shell & Controller Script ----
+modal_html <- paste0(
+  hidden_charts_html, "\n",
+  hidden_sla_html, "\n",
+  hidden_scenario_html, "\n",
+  hidden_label_html, "\n",
+  hidden_error_html, "\n",
+  '
+<div id="hd-drilldown-modal-backdrop" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(15,23,42,0.6); z-index:999999; justify-content:center; align-items:center; backdrop-filter:blur(2px);" onclick="if(event.target===this) closeDrilldownModal();">
+  <div style="background:#ffffff; border-radius:8px; width:94%; max-width:1180px; max-height:88vh; display:flex; flex-direction:column; box-shadow:0 16px 40px rgba(0,0,0,0.35); border:1px solid #CBD5E1; overflow:hidden;">
+    <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 16px; background:#0F172A; color:#ffffff; border-bottom:1px solid #334155;">
+      <div style="display:flex; align-items:center; gap:8px;">
+        <span id="hd-modal-icon" style="font-size:16px;">📊</span>
+        <h4 id="hd-modal-title" style="margin:0; font-size:14px; font-weight:700; color:#ffffff;">Drilldown Details</h4>
+      </div>
+      <div style="display:flex; align-items:center; gap:6px;">
+        <button type="button" class="hd-modal-mode-btn" data-mode="charts" onclick="openChartsModal(\'GRID\')" style="background:#1E293B; color:#E2E8F0; border:1px solid #475569; border-radius:4px; padding:3px 9px; font-size:11px; font-weight:600; cursor:pointer;">📈 Executive Charts</button>
+        <button type="button" class="hd-modal-mode-btn" data-mode="sla" onclick="openSlaModal(\'ALL\')" style="background:#1E293B; color:#E2E8F0; border:1px solid #475569; border-radius:4px; padding:3px 9px; font-size:11px; font-weight:600; cursor:pointer;">🏥 SLA Status</button>
+        <button type="button" class="hd-modal-mode-btn" data-mode="scenario" onclick="openScenarioModal(\'ALL\')" style="background:#1E293B; color:#E2E8F0; border:1px solid #475569; border-radius:4px; padding:3px 9px; font-size:11px; font-weight:600; cursor:pointer;">🧭 Scenarios</button>
+        <button type="button" class="hd-modal-mode-btn" data-mode="label" onclick="openLabelModal(\'BREACHES\')" style="background:#1E293B; color:#E2E8F0; border:1px solid #475569; border-radius:4px; padding:3px 9px; font-size:11px; font-weight:600; cursor:pointer;">🔥 Label RT SLA</button>
+        <button type="button" class="hd-modal-mode-btn" data-mode="error" onclick="openErrorModal(\'ALL\')" style="background:#1E293B; color:#E2E8F0; border:1px solid #475569; border-radius:4px; padding:3px 9px; font-size:11px; font-weight:600; cursor:pointer;">⚠️ HTTP Errors</button>
+        <button type="button" onclick="closeDrilldownModal();" style="background:transparent; border:none; color:#ffffff; font-size:22px; cursor:pointer; line-height:1; padding:0 6px; margin-left:6px;">&times;</button>
+      </div>
+    </div>
+    <div style="padding:7px 16px; background:#F8FAFC; border-bottom:1px solid #E2E8F0; display:flex; gap:6px; flex-wrap:wrap; align-items:center; max-height:88px; overflow-y:auto;">
+      <span style="font-size:11px; font-weight:700; color:#64748B; text-transform:uppercase; margin-right:4px;">Filter:</span>
+      <div id="hd-modal-tabs" style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;"></div>
+    </div>
+    <div id="hd-modal-body" style="padding:12px 16px; overflow-y:auto; flex:1; background:#F8FAFC;"></div>
+    <div style="padding:8px 16px; background:#FFFFFF; border-top:1px solid #E2E8F0; display:flex; justify-content:space-between; align-items:center;">
+      <small style="color:#64748B; font-size:11px;">💡 Tip: Use the top-right switcher buttons or filter pills to navigate between Executive Charts, SLA Status, Scenarios, Label RT Breaches, and HTTP Error Breakdown. Press <kbd style="background:#E2E8F0; padding:1px 5px; border-radius:3px;">ESC</kbd> to close.</small>
+      <button type="button" onclick="closeDrilldownModal();" style="background:#334155; color:#ffffff; border:none; border-radius:4px; padding:4px 14px; font-size:12px; cursor:pointer; font-weight:600;">Close</button>
+    </div>
+  </div>
+</div>
+<script>
+(function() {
+  function showDrilldown(mode, tabId, icon, baseTitle) {
+    var modal = document.getElementById("hd-drilldown-modal-backdrop");
+    var tabsContainer = document.getElementById("hd-modal-tabs");
+    var body = document.getElementById("hd-modal-body");
+    var titleEl = document.getElementById("hd-modal-title");
+    var iconEl = document.getElementById("hd-modal-icon");
+    if (!modal || !body || !tabsContainer) return;
+
+    modal.querySelectorAll(".hd-modal-mode-btn").forEach(function(mBtn) {
+      var isModeActive = (mBtn.getAttribute("data-mode") === mode);
+      mBtn.style.background = isModeActive ? "#2563EB" : "#1E293B";
+      mBtn.style.color = isModeActive ? "#FFFFFF" : "#E2E8F0";
+      mBtn.style.border = isModeActive ? "1px solid #3B82F6" : "1px solid #475569";
+    });
+
+    var tabsTemplate = document.getElementById(mode + "-tabs-template");
+    if (tabsTemplate) {
+      tabsContainer.innerHTML = tabsTemplate.innerHTML;
+    }
+
+    var targetDiv = document.getElementById(mode + "-data-" + tabId);
+    if (!targetDiv) {
+      targetDiv = document.getElementById(mode + "-data-GRID") || document.getElementById(mode + "-data-ALL") || document.getElementById(mode + "-data-BREACHES");
+    }
+    body.innerHTML = targetDiv ? targetDiv.innerHTML : "<p>No data available.</p>";
+
+    var activeLabel = tabId;
+    tabsContainer.querySelectorAll(".hd-modal-tab-btn").forEach(function(btn) {
+      var isActive = (btn.getAttribute("data-tab-id") === tabId);
+      btn.style.background = isActive ? "#2563EB" : "#FFFFFF";
+      btn.style.color = isActive ? "#FFFFFF" : "#334155";
+      btn.style.border = isActive ? "1px solid #2563EB" : "1px solid #CBD5E1";
+      btn.style.borderRadius = "4px";
+      btn.style.padding = "3px 10px";
+      btn.style.fontSize = "11.5px";
+      btn.style.fontWeight = "600";
+      btn.style.cursor = "pointer";
+      if (isActive) activeLabel = btn.innerText;
+    });
+
+    if (iconEl) iconEl.innerText = icon;
+    if (titleEl) titleEl.innerText = baseTitle + " — " + activeLabel;
+    modal.style.display = "flex";
+  }
+
+  window.openChartsModal = function(viewId) {
+    showDrilldown("charts", viewId || "GRID", "📈", "Executive Performance Charts");
+  };
+
+  window.openSlaModal = function(appId) {
+    showDrilldown("sla", appId || "ALL", "🏥", "Application SLA Evaluation Summary");
+  };
+
+  window.openScenarioModal = function(appId) {
+    showDrilldown("scenario", appId || "ALL", "🧭", "Scenario Health Details");
+  };
+
+  window.openLabelModal = function(scenId) {
+    showDrilldown("label", scenId || "BREACHES", "🔥", "Transaction Label Response Time SLA Breakdown");
+  };
+
+  window.openErrorModal = function(txId) {
+    showDrilldown("error", txId || "ALL", "⚠️", "HTTP Error Code & Message Breakdown");
+  };
+
+  window.closeDrilldownModal = function() {
+    var modal = document.getElementById("hd-drilldown-modal-backdrop");
+    if (modal) modal.style.display = "none";
+  };
+
+  document.addEventListener("keydown", function(e) {
+    if (e.key === "Escape") closeDrilldownModal();
+  });
+})();
+</script>
+'
+)
+
+# ============================================================
+# 9. ZONE 5: SINGLE-LINE REMARKS BAR & COMPACT SLA DISCLAIMER
+# ============================================================
+api_key <- tryCatch({
+  yaml::read_yaml(here::here("secrets.yaml"))$amplify_token
+}, error = function(e) NULL)
+
+ai_enabled <- isTRUE(as.logical(params_cfg$ai_summary_enabled)) ||
+              identical(tolower(as.character(params_cfg$ai_summary_enabled)), "true")
+
+initial_remarks <- "Enter remarks here.."
+
+has_any_sla <- (length(sla_results) > 0) || (length(rt_sla_results) > 0)
+disclaimer_tag <- if (has_any_sla) {
+  htmltools::tags$div(
+    class = "hd-disclaimer-strip",
+    htmltools::tags$strong("⚠ Note: "),
+    "Client-side SLA evaluation only (RT, Error Rate, TPS, VUs). Server-side infrastructure metrics (CPU/Memory) are not captured by this tool and require separate monitoring sign-off."
+  )
+} else NULL
+
+remarks_bar_tag <- render_compact_remarks_bar(
+  chart_id        = "ai_perf_summary",
+  initial_text    = initial_remarks,
+  disclaimer_html = disclaimer_tag
+)
+
+# ============================================================
+# 10. ASSEMBLE FULL SINGLE-VIEWPORT OUTPUT
+# ============================================================
+full_viewport_html <- paste0(
+  '<div class="hd-viewport">',
+  top_bar_html,
+  kpi_row_html,
+  app_matrix_card_html,
+  mid_grid_html,
+  bot_grid_html,
+  as.character(remarks_bar_tag),
+  modal_html,
   '</div>'
 )
 
-run_summary <- raw_data %>%
-  mutate(
-    is_pass = tolower(trimws(as.character(success))) %in%
-      c("true","yes","1")
-  ) %>%
-  group_by(run_id) %>%
-  summarise(
-    users = n_distinct(user_index),
-    tx_count = n(),
-    pass_count = sum(is_pass),
-    duration_secs = as.numeric(
-      difftime(
-        max(timestamp),
-        min(timestamp),
-        units = "secs"
-      )
-    ),
-    throughput = ifelse(
-      duration_secs > 0,
-      round(pass_count / duration_secs, 2),
-      0
-    ),
-    error_rate = round(
-      sum(!is_pass) / tx_count * 100,
-      2
-    ),
-    .groups = "drop"
-  )
-
-current_run_stats <- run_summary %>%
-  filter(run_id == current_run_id)
-
-baseline_run_stats <- run_summary %>%
-  filter(run_id == baseline_run_id)
-
-current_users <- current_run_stats$users[1]
-baseline_users <- baseline_run_stats$users[1]
-
-current_tp <- current_run_stats$throughput[1]
-baseline_tp <- baseline_run_stats$throughput[1]
-
-current_er <- current_run_stats$error_rate[1]
-baseline_er <- baseline_run_stats$error_rate[1]
-
-# Resolve the configured percentile (mirrors dash-scorecard.Rmd logic)
-exec_rt_percentile <- 0.95
-if (exists("rt_sla_config") && !is.null(rt_sla_config$metric)) {
-  exec_rt_percentile <- switch(
-    tolower(rt_sla_config$metric),
-    "p90" = 0.90,
-    "p95" = 0.95,
-    "p99" = 0.99,
-    0.95
-  )
-}
-
-current_p95 <- raw_data %>%
-  filter(run_id == current_run_id) %>%
-  summarise(
-    v = round(
-      quantile(elapsed, exec_rt_percentile, na.rm = TRUE),
-      0
-    )
-  ) %>%
-  pull(v)
-
-baseline_p95 <- raw_data %>%
-  filter(run_id == baseline_run_id) %>%
-  summarise(
-    v = round(
-      quantile(elapsed, exec_rt_percentile, na.rm = TRUE),
-      0
-    )
-  ) %>%
-  pull(v)
-
-vu_delta <- delta_label(
-  current_users,
-  baseline_users
-)
-
-tp_delta <- delta_label(
-  current_tp,
-  baseline_tp
-)
-
-er_delta <- delta_label(
-  current_er,
-  baseline_er,
-  lower_is_better = TRUE
-)
-
-rt_delta <- delta_label(
-  current_p95,
-  baseline_p95,
-  lower_is_better = TRUE
-)
-
-rt_title <- "Response Time"
-
-if (
-  exists("rt_sla_config") &&
-  !is.null(rt_sla_config$metric)
-) {
-
-  rt_title <- paste(
-    toupper(rt_sla_config$metric),
-    "Response Time"
-  )
-
-}
-
-current_start <- raw_data %>%
-  filter(run_id == current_run_id) %>%
-  summarise(v = min(timestamp, na.rm = TRUE)) %>%
-  pull(v)
-
-current_end <- raw_data %>%
-  filter(run_id == current_run_id) %>%
-  summarise(v = max(timestamp, na.rm = TRUE)) %>%
-  pull(v)
-
-baseline_start <- raw_data %>%
-  filter(run_id == baseline_run_id) %>%
-  summarise(v = min(timestamp, na.rm = TRUE)) %>%
-  pull(v)
-
-baseline_end <- raw_data %>%
-  filter(run_id == baseline_run_id) %>%
-  summarise(v = max(timestamp, na.rm = TRUE)) %>%
-  pull(v)
-
-current_duration <- paste(
-  round(as.numeric(difftime(
-    current_end,
-    current_start,
-    units = "mins"
-  ))),
-  "minutes"
-)
-
-baseline_duration <- paste(
-  round(as.numeric(difftime(
-    baseline_end,
-    baseline_start,
-    units = "mins"
-  ))),
-  "minutes"
-)
-
-current_start_fmt <- format(
-  current_start,
-  "%d %b %Y, %I:%M:%S %p"
-)
-
-current_end_fmt <- format(
-  current_end,
-  "%d %b %Y, %I:%M:%S %p"
-)
-
-baseline_start_fmt <- format(
-  baseline_start,
-  "%d %b %Y, %I:%M:%S %p"
-)
-
-baseline_end_fmt <- format(
-  baseline_end,
-  "%d %b %Y, %I:%M:%S %p"
-)
-
-# ============================================================
-# OVERALL RESULT
-# ============================================================
-# PASS when:
-# - Virtual User SLA passes
-# - All Throughput application SLAs pass
-# - All Error Rate scenario SLAs pass
-# - All Response Time scenario SLAs pass
-# ============================================================
-
-overall_status <-
-  vu_status == "PASS" &&
-  tp_app_passed == tp_app_total &&
-  er_scenario_passed == er_scenario_total &&
-  scenario_passed == scenario_total
-
-overall_result <- if (isTRUE(overall_status)) {
-  "<span class='status-pass'>PASS</span>"
-} else {
-  "<span class='status-fail'>FAIL</span>"
-}
-
-summary_class <- if (isTRUE(overall_status)) {
-  "executive-summary"
-} else {
-  "executive-summary fail"
-}
-
-overall_icon <- if (isTRUE(overall_status)) {
-  "✅"
-} else {
-  "❌"
-}
-
-# ============================================================
-# KPI SUMMARY TOOLTIP TEXT
-# Scoped to KPI Summary cards.
-# ============================================================
-
-kpi_tooltip_text <- "
-KEY PERFORMANCE INDICATOR (KPI) SUMMARY
-
-Max Users
-Peak concurrent virtual users executed during the test.
-
-Apps Passed TPS SLA
-Number of applications that met their throughput (TPS) SLA target.
-
-Scenarios Passed Response Time SLA
-Number of scenarios that met the configured response time SLA.
-
-Scenarios Passed Error SLA
-Number of scenarios that met the configured error rate SLA.
-"
-
-# ============================================================
-# HTML
-# ============================================================
-
-header_cards <- sprintf(
-'
-<div style="
-  display:flex;
-  gap:14px;
-  margin-bottom:18px;
-">
-
-  <!-- Test Details -->
-  <div style="
-      flex:1;
-      background:#f8f9fa;
-      border:1px solid #dee2e6;
-      border-radius:4px;
-      padding:14px 16px;
-  ">
-    <div style="
-      font-size:13px;
-      color:#6c757d;
-      text-transform:uppercase;
-      font-weight:600;
-      margin-bottom:8px;
-    ">
-      Test Details
-    </div>
-
-    <div style="display:flex;">
-      <span style="width:24px;">🗀</span>
-      <span style="width:100px;"><strong>Project:</strong></span>
-      <span>%s</span>
-    </div>
-
-    <div style="display:flex; margin-top:6px;">
-      <span style="width:24px;">🧪</span>
-      <span style="width:100px;"><strong>Test Name:</strong></span>
-      <span>%s</span>
-    </div>
-
-    <div style="display:flex; margin-top:6px;">
-      <span style="width:24px;">🖥</span>
-      <span style="width:100px;"><strong>Applications:</strong></span>
-      <span>%s</span>
-    </div>
-
-  </div>
-
-  <!-- Current Run -->
-  <div style="
-      flex:1;
-      background:#f8f9fa;
-      border:1px solid #dee2e6;
-      border-radius:4px;
-      padding:14px 16px;
-  ">
-    <div style="
-      font-size:13px;
-      color:#6c757d;
-      text-transform:uppercase;
-      font-weight:600;
-      margin-bottom:8px;
-    ">
-      Current Run
-    </div>
-
-    <div><strong>%s</strong></div>
-
-    <div style="margin-top:8px; display:flex;">
-    <span style="width:80px; color:#6c757d;">⏱ Duration</span>
-    <span>%s</span>
-    </div>
-
-    <div style="margin-top:4px; display:flex;">
-    <span style="width:80px; color:#6c757d;">▷ Started</span>
-    <span>%s</span>
-    </div>
-
-    <div style="margin-top:4px; display:flex;">
-    <span style="width:80px; color:#6c757d;">▢ Ended</span>
-    <span>%s</span>
-    </div>
-
-  </div>
-
-  <!-- Baseline Run -->
-  <div style="
-      flex:1;
-      background:#f8f9fa;
-      border:1px solid #dee2e6;
-      border-radius:4px;
-      padding:14px 16px;
-  ">
-    <div style="
-      font-size:13px;
-      color:#6c757d;
-      text-transform:uppercase;
-      font-weight:600;
-      margin-bottom:8px;
-    ">
-      Baseline Run
-    </div>
-
-    <div><strong>%s</strong></div>
-
-    <div style="margin-top:8px; display:flex;">
-    <span style="width:80px; color:#6c757d;">⏱ Duration</span>
-    <span>%s</span>
-    </div>
-
-    <div style="margin-top:4px; display:flex;">
-    <span style="width:80px; color:#6c757d;">▷ Started</span>
-    <span>%s</span>
-    </div>
-
-    <div style="margin-top:4px; display:flex;">
-    <span style="width:80px; color:#6c757d;">▢ Ended</span>
-    <span>%s</span>
-    </div>
-
-  </div>
-
-</div>
-',
-project_name,
-scenario_name,
-application_list,
-current_run_id,
-current_duration,
-current_start_fmt,
-current_end_fmt,
-baseline_run_id,
-baseline_duration,
-baseline_start_fmt,
-baseline_end_fmt
-)
-
-# Pre-build the KPI info icon using the shared tooltip text
-kpi_info_icon_html <- sprintf(
-  '<i style="color:#6c757d;cursor:help;font-size:14px;margin-top:-2px;"
-    class="fa fa-info-circle breach-tooltip"
-    title="%s"></i>',
-  kpi_tooltip_text
-)
-
-vu_card_colour <- if (identical(vu_status, "FAIL")) "#dc3545" else "#2563eb"
-
-summary_html <- sprintf(
-'
-<div class="%s">
-
-  <h2>%s OVERALL STATUS: %s</h2>
-
-  %s
-
-  <hr/>
-
-  <!-- KPI SUMMARY -->
-
-  <div style="
-    display:flex;
-    align-items:center;
-    gap:8px;
-  ">
-    <h3 class="section-header">
-      KPI Summary
-    </h3>
-
-    %s
-
-  </div>
-
-  <div style="
-    display:flex;
-    gap:14px;
-    flex-wrap:wrap;
-    margin-top:10px;
-  ">
-
-    <!-- Max Users -->
-
-    <div style="
-        flex:1 1 200px;
-        min-width:200px;
-        background:#f8f9fa;
-        border:1px solid #dee2e6;
-        border-left:5px solid %s;
-        border-radius:4px;
-        padding:14px 16px;
-        text-align:left;
-    ">
-
-      <div style="
-        font-size:32px;
-        color:%s;
-        font-weight:400;
-      ">
-        %s
-      </div>
-
-      <div style="
-        margin-top:10px;
-        font-size:18px;
-        color:#444;
-      ">
-        Max Users
-      </div>
-
-    </div>
-
-    <!-- TPS SLA -->
-
-    <div style="
-        flex:1 1 200px;
-        min-width:200px;
-        background:#f8f9fa;
-        border:1px solid #dee2e6;
-        border-left:5px solid %s;
-        border-radius:4px;
-        padding:14px 16px;
-        text-align:left;
-    ">
-
-      <div>
-        <span style="
-          font-size:32px;
-          color:%s;
-          font-weight:400;
-        ">
-          %s of %s
-        </span>
-      </div>
-
-      <div style="
-        margin-top:10px;
-        font-size:18px;
-        color:#444;
-      ">
-        Apps Passed TPS SLA
-      </div>
-
-    </div>
-
-    <!-- RT SLA -->
-
-    <div style="
-        flex:1 1 200px;
-        min-width:200px;
-        background:#f8f9fa;
-        border:1px solid #dee2e6;
-        border-left:5px solid %s;
-        border-radius:4px;
-        padding:14px 16px;
-        text-align:left;
-    ">
-
-      <div>
-        <span style="
-          font-size:32px;
-          color:%s;
-          font-weight:400;
-        ">
-          %s of %s
-        </span>
-      </div>
-
-      <div style="
-        margin-top:10px;
-        font-size:18px;
-        color:#444;
-      ">
-        Scenarios Passed %s SLA
-      </div>
-
-    </div>
-
-    <!-- ERROR SLA -->
-
-    <div style="
-        flex:1 1 200px;
-        min-width:200px;
-        background:#f8f9fa;
-        border:1px solid #dee2e6;
-        border-left:5px solid %s;
-        border-radius:4px;
-        padding:14px 16px;
-        text-align:left;
-    ">
-
-      <div>
-        <span style="
-          font-size:32px;
-          color:%s;
-          font-weight:400;
-        ">
-          %s of %s
-        </span>
-      </div>
-
-      <div style="
-        margin-top:10px;
-        font-size:18px;
-        color:#444;
-      ">
-        Scenarios Passed Error SLA
-      </div>
-
-    </div>
-
-  </div>
-
-</div>
-',
-summary_class,
-
-overall_icon,
-overall_result,
-
-header_cards,
-
-kpi_info_icon_html,
-
-vu_card_colour,
-vu_card_colour,
-format(current_users, big.mark = ","),
-
-status_colour(tp_status),
-status_colour(tp_status),
-tp_app_passed,
-tp_app_total,
-
-status_colour(rt_status),
-status_colour(rt_status),
-scenario_passed,
-scenario_total,
-rt_title,
-
-status_colour(er_status),
-status_colour(er_status),
-er_scenario_passed,
-er_scenario_total
-)
-
-HTML(summary_html)
+HTML(full_viewport_html)
 ```

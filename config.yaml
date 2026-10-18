@@ -7,8 +7,8 @@ rmd_template: ".engine/storyteller.Rmd" # DO NOT UPDATE
 # output_dir: "C:\\Projects\\report_tool\\aper-delta-v2\\aper-delta-v2\\Reports" # Where the HTML files will go e.g. //<host>/shared/Performance-JMeter/reports
 # database_path: "C:\\Projects\\report_tool\\aper-delta-v2\\aper-delta-v2\\Data\\Performance_Vault.db" # Update if needed e.g. //<host>/shared/Performance-JMeter/database/Performance_Vault.db
 
-output_dir: "//<host>/shared/Performance-JMeter/reports" # Where the HTML files will go e.g. //<host>/shared/Performance-JMeter/reports
-database_path: "//<host>/shared/Performance-JMeter/database/Performance_Vault.db" # Update if needed e.g. //<host>/shared/Performance-JMeter/database/Performance_Vault.db
+output_dir: "Reports" # Where the HTML files will go e.g. //<host>/shared/Performance-JMeter/reports
+database_path: "Data/Performance_Vault.db" # Update if needed e.g. //<host>/shared/Performance-JMeter/database/Performance_Vault.db
 
 sla_file_path: "SLA/performance-sla.yaml" # Update if needed
 ai_summary_enabled: "true"

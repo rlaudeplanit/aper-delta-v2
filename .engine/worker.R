@@ -37,14 +37,11 @@ if (!dir.exists(lib_dir)) dir.create(lib_dir, recursive = TRUE)
 r_base_lib <- file.path(R.home(), "library")
 .libPaths(c(lib_dir, r_base_lib))
 
-### Define list of packages ###
+### Define list of core packages (trimmed for fast high-density executive report generation) ###
 packages <- c(
-  "yaml", "tidyverse", "DBI", "duckdb", "lubridate", "readr", "knitr", "here",
-  "rmarkdown", "flexdashboard", "extrafont", "gridExtra", "DT",
-  "ff", "png", "ggthemes", "plotly", "shinydashboard",
-  "rlang", "purrr", "tidyr", "pacman", "scales", "dplyr",
-  "vroom", "tools", "patchwork", "crosstalk",
-  "Polychrome", "htmltools", "ggpubr", "jsonlite", "httr"
+  "yaml", "DBI", "duckdb", "lubridate", "readr", "knitr", "here",
+  "rmarkdown", "flexdashboard", "rlang", "purrr", "tidyr", "scales",
+  "dplyr", "vroom", "tools", "stringr", "htmltools", "jsonlite", "httr"
 )
 
 ### Auto-bootstrap missing packages ###
@@ -54,11 +51,6 @@ for (pkg in packages) {
   }
   suppressMessages(library(pkg, character.only = TRUE))
 }
-
-theme_set(
-  theme_minimal() +
-    theme(text = element_text(family = "monospace"))
-)
 
 # --- [Inputs & Config] ---
 raw_args <- commandArgs(trailingOnly = TRUE)
@@ -477,29 +469,61 @@ if (opMode == "report") {
 
   sanitized_filter <- if (labelFilterParam == "NONE") "" else labelFilterParam
 
-  withCallingHandlers(
-    render(
-      file.path(get_active_script_dir(), "storyteller.Rmd"),
-      params = list(
-        project      = resolved_project,
-        scenario     = params_cfg$test_scenario,
-        runs         = selected_runs,
-        tool         = active_tool,
-        db_path      = db_path,
-        label_filter = sanitized_filter,
-        excluded_labels = excluded_labels,
-        report_id    = tools::file_path_sans_ext(report_filename)
-      ),
-      output_file   = report_filename,
-      output_dir    = report_dir,
-      knit_root_dir = current_dir
-    ),
-    warning = function(w) {
-      if (grepl("You changed the working directory", conditionMessage(w))) {
-        invokeRestart("muffleWarning")
-      }
-    }
+  report_params <- list(
+    project         = resolved_project,
+    scenario        = params_cfg$test_scenario,
+    runs            = selected_runs,
+    tool            = active_tool,
+    db_path         = db_path,
+    label_filter    = sanitized_filter,
+    excluded_labels = excluded_labels,
+    report_id       = tools::file_path_sans_ext(report_filename)
   )
+
+  # Check if Quarto CLI is available for rendering storyteller.qmd
+  quarto_bin <- Sys.which("quarto")
+  if (!nzchar(quarto_bin)) {
+    candidate_paths <- c(
+      "C:/Program Files/Quarto/bin/quarto.exe",
+      file.path(Sys.getenv("LOCALAPPDATA"), "Programs", "Quarto", "bin", "quarto.exe"),
+      "C:/Program Files/RStudio/resources/app/bin/quarto/bin/quarto.exe"
+    )
+    existing_q <- candidate_paths[file.exists(candidate_paths)]
+    if (length(existing_q) > 0) quarto_bin <- existing_q[1]
+  }
+
+  qmd_template <- file.path(get_active_script_dir(), "storyteller.qmd")
+  rmd_template <- file.path(get_active_script_dir(), "storyteller.Rmd")
+
+  if (nzchar(quarto_bin) && file.exists(qmd_template) && requireNamespace("quarto", quietly = TRUE)) {
+    message(">>> [QUARTO] Detected Quarto CLI (", quarto_bin, "). Rendering storyteller.qmd...")
+    Sys.setenv(QUARTO_PATH = quarto_bin)
+    quarto::quarto_render(
+      input          = qmd_template,
+      execute_params = report_params,
+      output_file    = report_filename,
+      execute_dir    = current_dir
+    )
+    rendered_tmp <- file.path(dirname(qmd_template), report_filename)
+    if (file.exists(rendered_tmp) && normalizePath(dirname(rendered_tmp), mustWork = FALSE) != normalizePath(report_dir, mustWork = FALSE)) {
+      file.rename(rendered_tmp, file.path(report_dir, report_filename))
+    }
+  } else {
+    withCallingHandlers(
+      render(
+        rmd_template,
+        params        = report_params,
+        output_file   = report_filename,
+        output_dir    = report_dir,
+        knit_root_dir = current_dir
+      ),
+      warning = function(w) {
+        if (grepl("You changed the working directory", conditionMessage(w))) {
+          invokeRestart("muffleWarning")
+        }
+      }
+    )
+  }
 
   message(">>> [SUCCESS] Report saved: ", file.path(report_dir, report_filename))
   quit(save = "no")

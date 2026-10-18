@@ -8,9 +8,6 @@
 #  - Scrollable container wrapper
 # ============================================================
 
-library(Polychrome)
-library(ggplot2)
-library(plotly)
 library(dplyr)
 library(stringr)
 library(htmltools)
@@ -49,10 +46,12 @@ testInfoBlack    <- "#242424"
 #  GLOBAL GGPLOT THEME
 #  - Applies a consistent monospace theme across all ggplots
 # ============================================================
-theme_set(
-  theme_minimal() +
-    theme(text = element_text(family = "monospace"))
-)
+if (requireNamespace("ggplot2", quietly = TRUE) && "package:ggplot2" %in% search()) {
+  theme_set(
+    theme_minimal() +
+      theme(text = element_text(family = "monospace"))
+  )
+}
 
 # ============================================================
 #  GLOBAL PLOTLY FONT
@@ -452,6 +451,184 @@ render_observation_panel <- function(chart_id, initial_text = "") {
     }
   });
 
+})();
+", chart_id, report_id))
+    )
+  )
+}
+
+render_compact_remarks_bar <- function(chart_id = "ai_perf_summary", initial_text = "Enter remarks here..", disclaimer_html = NULL) {
+  report_id <- if (exists("params") && !is.null(params$report_id)) params$report_id else "default_report"
+
+  htmltools::tags$div(
+    class = "hd-remarks-footer-wrap",
+    htmltools::tags$div(
+      class = "hd-remarks-bar",
+      htmltools::tags$span(class = "hd-remarks-label", "💬 Remarks"),
+      htmltools::tags$input(
+        type = "text",
+        id = paste0(chart_id, "_comment"),
+        class = "hd-remarks-input",
+        placeholder = "Enter executive remarks... (Supports **bold**, _italic_, ==OVERALL PASSED==, ==OVERALL FAILED==)",
+        value = initial_text,
+        style = "display: none;"
+      ),
+      htmltools::tags$div(
+        id = paste0(chart_id, "_preview"),
+        class = "hd-remarks-preview",
+        title = "Click Edit to modify remarks"
+      ),
+      htmltools::tags$span(
+        id = paste0(chart_id, "_status"),
+        class = "hd-remarks-status",
+        "Draft"
+      ),
+      htmltools::tags$button(
+        "✏️ Edit",
+        type = "button",
+        id = paste0(chart_id, "_toggle_view"),
+        class = "hd-remarks-btn-edit"
+      ),
+      htmltools::tags$button(
+        "💾 Save Remarks",
+        type = "button",
+        id = paste0(chart_id, "_save_js"),
+        class = "hd-remarks-btn-save",
+        title = "Save remarks sidecar JS file in the same folder as your HTML report"
+      )
+    ),
+    if (!is.null(disclaimer_html)) disclaimer_html else NULL,
+    htmltools::tags$script(
+      htmltools::HTML(sprintf("
+(function() {
+  const CHART_ID  = '%s';
+  const REPORT_ID = '%s';
+  const JS_FILENAME = (REPORT_ID || 'performance_report') + '_observations.js';
+  const STORAGE_KEY = REPORT_ID + '_' + CHART_ID + '_comment';
+
+  const inputEl   = document.getElementById(CHART_ID + '_comment');
+  const preview   = document.getElementById(CHART_ID + '_preview');
+  const toggleBtn = document.getElementById(CHART_ID + '_toggle_view');
+  const status    = document.getElementById(CHART_ID + '_status');
+  const saveBtn   = document.getElementById(CHART_ID + '_save_js');
+
+  if (!inputEl) return;
+  let isPreview = true;
+
+  function parseMarkdown(text) {
+    if (!text) return '<span style=\"color:#9ca3af;\">Enter executive remarks...</span>';
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\\*\\*(.*?)\\*\\*/g, '<strong>$1</strong>')
+      .replace(/__(.*?)__/g, '<u>$1</u>')
+      .replace(/_(.*?)_/g, '<em>$1</em>')
+      .replace(/\\*(.*?)\\*/g, '<em>$1</em>')
+      .replace(/==OVERALL PASSED==/g, '<mark class=\"sla-pass\">OVERALL PASSED</mark>')
+      .replace(/==OVERALL FAILED==/g, '<mark class=\"sla-fail\">OVERALL FAILED</mark>')
+      .replace(/==(.*?)==/g, '<mark class=\"sla-generic\">$1</mark>');
+  }
+
+  function updatePreview() {
+    preview.innerHTML = parseMarkdown(inputEl.value);
+  }
+
+  function toggleEditMode() {
+    isPreview = !isPreview;
+    if (isPreview) {
+      updatePreview();
+      inputEl.style.display = 'none';
+      preview.style.display = 'block';
+      toggleBtn.innerHTML = '✏️ Edit';
+    } else {
+      preview.style.display = 'none';
+      inputEl.style.display = 'block';
+      inputEl.focus();
+      toggleBtn.innerHTML = '👁️ Preview';
+    }
+  }
+
+  toggleBtn.addEventListener('click', toggleEditMode);
+  preview.addEventListener('dblclick', function() {
+    if (isPreview) toggleEditMode();
+  });
+
+  function loadSidecarJS() {
+    const script = document.createElement('script');
+    script.src = './' + JS_FILENAME + '?v=' + new Date().getTime();
+    script.onload = function() {
+      if (window.REPORT_OBSERVATIONS && window.REPORT_OBSERVATIONS[CHART_ID] !== undefined) {
+        inputEl.value = window.REPORT_OBSERVATIONS[CHART_ID];
+        localStorage.setItem(STORAGE_KEY, window.REPORT_OBSERVATIONS[CHART_ID]);
+        status.innerHTML = '✓ Loaded';
+      } else {
+        const localVal = localStorage.getItem(STORAGE_KEY);
+        if (localVal !== null) inputEl.value = localVal;
+      }
+      updatePreview();
+    };
+    script.onerror = function() {
+      const localVal = localStorage.getItem(STORAGE_KEY);
+      if (localVal !== null) inputEl.value = localVal;
+      updatePreview();
+    };
+    document.head.appendChild(script);
+  }
+
+  loadSidecarJS();
+
+  inputEl.addEventListener('input', function() {
+    localStorage.setItem(STORAGE_KEY, inputEl.value);
+    status.innerHTML = '✓ Auto-Saved';
+  });
+
+  inputEl.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (!isPreview) toggleEditMode();
+    }
+  });
+
+  saveBtn.addEventListener('click', async function() {
+    const payload = {};
+    document.querySelectorAll('[id$=\"_comment\"]').forEach(function(el) {
+      const id = el.id.replace('_comment', '');
+      payload[id] = el.value;
+    });
+    const fileContent = 'window.REPORT_OBSERVATIONS = ' + JSON.stringify(payload, null, 2) + ';';
+
+    if ('showSaveFilePicker' in window) {
+      try {
+        const handle = await window.showSaveFilePicker({
+          suggestedName: JS_FILENAME,
+          id: 'report_observations_folder',
+          types: [{
+            description: 'JavaScript Sidecar File',
+            accept: {'text/javascript': ['.js']}
+          }]
+        });
+        const writable = await handle.createWritable();
+        await writable.write(fileContent);
+        await writable.close();
+        status.innerHTML = '💾 Saved!';
+      } catch (err) {
+        if (err.name !== 'AbortError') {
+          console.error('Save failed:', err);
+          alert('Save failed: ' + err.message);
+        }
+      }
+    } else {
+      const blob = new Blob([fileContent], { type: 'text/javascript;charset=utf-8' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = JS_FILENAME;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      status.innerHTML = '💾 Downloaded!';
+    }
+  });
 })();
 ", chart_id, report_id))
     )
