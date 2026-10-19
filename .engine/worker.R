@@ -497,16 +497,29 @@ if (opMode == "report") {
 
   if (nzchar(quarto_bin) && file.exists(qmd_template) && requireNamespace("quarto", quietly = TRUE)) {
     message(">>> [QUARTO] Detected Quarto CLI (", quarto_bin, "). Rendering storyteller.qmd...")
-    Sys.setenv(QUARTO_PATH = quarto_bin)
+    Sys.setenv(
+      QUARTO_PATH = quarto_bin,
+      R_LIBS      = lib_dir,
+      R_LIBS_USER = lib_dir,
+      R_LIBS_SITE = lib_dir
+    )
     quarto::quarto_render(
       input          = qmd_template,
       execute_params = report_params,
       output_file    = report_filename,
-      execute_dir    = current_dir
+      execute_dir    = current_dir,
+      quiet          = FALSE
     )
-    rendered_tmp <- file.path(dirname(qmd_template), report_filename)
-    if (file.exists(rendered_tmp) && normalizePath(dirname(rendered_tmp), mustWork = FALSE) != normalizePath(report_dir, mustWork = FALSE)) {
-      file.rename(rendered_tmp, file.path(report_dir, report_filename))
+    candidate_outputs <- c(
+      file.path(dirname(qmd_template), report_filename),
+      file.path(current_dir, report_filename)
+    )
+    for (cand in candidate_outputs) {
+      if (file.exists(cand) && normalizePath(cand, mustWork = FALSE) != normalizePath(file.path(report_dir, report_filename), mustWork = FALSE)) {
+        file.copy(cand, file.path(report_dir, report_filename), overwrite = TRUE)
+        unlink(cand)
+        break
+      }
     }
   } else {
     withCallingHandlers(
