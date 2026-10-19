@@ -641,10 +641,24 @@ app_matrix_card_html <- sprintf(
 # ============================================================
 
 # Left Table: Scenario Breakdown
+unique_scen_apps <- unique(logical_health_df$app_name)
+has_multi_app <- length(unique_scen_apps) > 1
+
+scen_app_pills_html <- paste(
+  sprintf('<label for="hd-scen-app-ALL" class="hd-scen-app-pill" data-scen-app="ALL">All (%d)</label>', nrow(logical_health_df)),
+  paste(sapply(unique_scen_apps, function(app) {
+    safe_id <- safe_dom_id(app)
+    cnt <- sum(logical_health_df$app_name == app)
+    sprintf('<label for="hd-scen-app-%s" class="hd-scen-app-pill" data-scen-app="%s">%s (%d)</label>', safe_id, safe_id, htmlEscape(app), cnt)
+  }), collapse = ""),
+  sep = ""
+)
+
 logical_rows_html <- paste(
   lapply(seq_len(nrow(logical_health_df)), function(i) {
     r <- logical_health_df[i, ]
     scen_id_safe <- safe_dom_id(r$logical_scenario)
+    app_id_safe  <- safe_dom_id(r$app_name)
     status_b <- if (isTRUE(r$scenario_passed)) "<span class='status-pass'>PASS</span>" else "<span class='status-fail'>FAIL</span>"
     rt_b     <- metric_badge(sprintf("%s ms", format(round(r$pct_rt), big.mark = ",")), r$logical_rt_passed)
     lbl_b    <- metric_badge(sprintf("%d of %d", r$passed_labels, r$total_labels), r$logical_rt_passed)
@@ -653,9 +667,11 @@ logical_rows_html <- paste(
       scen_id_safe, lbl_b
     )
     er_b     <- metric_badge(sprintf("%.2f%%", r$error_rate), r$error_passed)
+    app_td   <- if (has_multi_app) sprintf("<td class='hd-scen-col-app' style='font-weight:700;font-size:11px;'>%s</td>", htmlEscape(r$app_name)) else ""
 
     sprintf(
-      "<tr style='cursor:pointer;' data-open-mode='label' data-open-tab='%s'>
+      "<tr class='hd-scen-table-row hd-scen-row-app-%s' style='cursor:pointer;' data-open-mode='label' data-open-tab='%s' data-app='%s'>
+         %s
          <td style='font-weight:600;font-family:monospace;font-size:11px;'>%s</td>
          <td style='text-align:center;'>%s</td>
          <td class='numeric-cell'>%s</td>
@@ -664,7 +680,10 @@ logical_rows_html <- paste(
          <td style='text-align:center;'>%s</td>
          <td class='numeric-cell'>%s</td>
        </tr>",
+      app_id_safe,
       scen_id_safe,
+      app_id_safe,
+      app_td,
       r$logical_scenario,
       status_b,
       format(r$requests, big.mark = ","),
@@ -677,10 +696,18 @@ logical_rows_html <- paste(
   collapse = "\n"
 )
 
+app_th <- if (has_multi_app) "<th class='hd-scen-col-app'>App</th>" else ""
+
 left_scenario_card_html <- sprintf(
   '<div class="hd-card">
      <div class="hd-card-header">
-       <h3 class="hd-card-title">🧭 Scenario Breakdown <span style="font-size:10.5px;font-weight:500;color:#64748B;text-transform:none;">(Click Transactions Met SLA 🔍 for Transaction Drilldown)</span></h3>
+       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0;">
+         <h3 class="hd-card-title">🧭 Scenario Breakdown <span style="font-size:10px;font-weight:500;color:#64748B;text-transform:none;">(Click Tx Met SLA 🔍)</span></h3>
+         <div class="hd-scen-filter-bar">
+           <span style="font-size:10px;font-weight:700;color:#64748B;text-transform:uppercase;">App:</span>
+           %s
+         </div>
+       </div>
        <div class="hd-card-badges">
          <label for="hd-mode-charts" class="hd-modal-btn" data-open-mode="charts" data-open-tab="SCENARIOS" style="margin:0;">📊 Compare vs Base</label>
          <label for="hd-mode-scenario" class="hd-modal-btn" data-open-mode="scenario" data-open-tab="ALL" style="margin:0;"><span class="%s">%d of %d Passed</span> 🔍</label>
@@ -690,6 +717,7 @@ left_scenario_card_html <- sprintf(
        <table class="hd-table">
          <thead>
            <tr>
+             %s
              <th>Scenario</th>
              <th style="text-align:center;">Status</th>
              <th class="numeric-header">Requests</th>
@@ -705,8 +733,10 @@ left_scenario_card_html <- sprintf(
        </table>
      </div>
    </div>',
+  scen_app_pills_html,
   ifelse(logical_rt_failed_cnt == 0 && logical_er_failed_cnt == 0, "status-pass", "status-fail"),
   sum(logical_health_df$scenario_passed, na.rm = TRUE), logical_scen_total,
+  app_th,
   rt_metric_name,
   logical_rows_html
 )
@@ -1113,12 +1143,94 @@ build_svg_dual_line_chart <- function(cur_df, base_df, y_col, y_label, unit_str 
   )
 }
 
-# Chart 1: P95 Response Time Over Time (Current vs Baseline)
-chart1_svg <- build_svg_dual_line_chart(
-  cur_df = ts_cur, base_df = ts_base, y_col = "pct_rt", y_label = "ms",
-  cur_color = "#2563EB", base_color = "#64748B",
-  ref_val = rt_default, ref_label = paste0("SLA: ", rt_default, " ms")
+unique_charts_apps <- unique(app_health$app_name)
+chart_app_ids <- c("ALL", sapply(unique_charts_apps, safe_dom_id))
+
+get_ts_sub <- function(df, target_app) {
+  if (nrow(df) == 0) return(df)
+  if (!"app_name" %in% names(df)) return(df)
+  if (target_app == "ALL") {
+    sub <- df %>% filter(app_name == "ALL")
+    if (nrow(sub) > 0) return(sub)
+    return(df)
+  }
+  df %>% filter(app_name == target_app)
+}
+
+ts_cur_all  <- get_ts_sub(ts_cur, "ALL")
+ts_base_all <- get_ts_sub(ts_base, "ALL")
+
+chart1_panels <- list()
+chart2_panels <- list()
+chart4_err_panels <- list()
+chart4_pareto_panels <- list()
+
+# Build Chart 1 (Response Time Timeline) panels
+chart1_panels[["ALL"]] <- sprintf(
+  '<div class="hd-chart-app-panel hd-chart-app-ALL">%s</div>',
+  build_svg_dual_line_chart(
+    cur_df = ts_cur_all, base_df = ts_base_all, y_col = "pct_rt", y_label = "ms",
+    cur_color = "#2563EB", base_color = "#64748B",
+    ref_val = rt_default, ref_label = paste0("SLA: ", format(round(rt_default), big.mark = ","), " ms")
+  )
 )
+
+# Build Chart 2 (Throughput & Concurrency) panels
+chart2_panels[["ALL"]] <- sprintf(
+  '<div class="hd-chart-app-panel hd-chart-app-ALL">%s</div>',
+  build_svg_dual_line_chart(
+    cur_df = ts_cur_all, base_df = ts_base_all, y_col = "tps", y_label = "TPS",
+    cur_color = "#16A34A", base_color = "#64748B",
+    sec_col = "active_users", sec_label = "Active VUs"
+  )
+)
+
+# Build Chart 4 (Error Timeline) panels
+chart4_err_panels[["ALL"]] <- sprintf(
+  '<div class="hd-chart-app-panel hd-chart-app-ALL">%s</div>',
+  build_svg_dual_line_chart(
+    cur_df = ts_cur_all, base_df = ts_base_all, y_col = "failed_tx", y_label = "Errors",
+    cur_color = "#DC2626", base_color = "#64748B",
+    svg_w = 520, svg_h = 115
+  )
+)
+
+for (app in unique_charts_apps) {
+  safe_id <- safe_dom_id(app)
+  app_ts_cur  <- get_ts_sub(ts_cur, app)
+  app_ts_base <- get_ts_sub(ts_base, app)
+  app_rt_sla  <- if (exists("rt_default") && !is.null(rt_default)) rt_default else 1500
+
+  chart1_panels[[safe_id]] <- sprintf(
+    '<div class="hd-chart-app-panel hd-chart-app-%s">%s</div>',
+    safe_id,
+    build_svg_dual_line_chart(
+      cur_df = app_ts_cur, base_df = app_ts_base, y_col = "pct_rt", y_label = "ms",
+      cur_color = "#2563EB", base_color = "#64748B",
+      ref_val = app_rt_sla, ref_label = paste0("SLA: ", format(round(app_rt_sla), big.mark = ","), " ms")
+    )
+  )
+
+  chart2_panels[[safe_id]] <- sprintf(
+    '<div class="hd-chart-app-panel hd-chart-app-%s">%s</div>',
+    safe_id,
+    build_svg_dual_line_chart(
+      cur_df = app_ts_cur, base_df = app_ts_base, y_col = "tps", y_label = "TPS",
+      cur_color = "#16A34A", base_color = "#64748B",
+      sec_col = "active_users", sec_label = "Active VUs"
+    )
+  )
+
+  chart4_err_panels[[safe_id]] <- sprintf(
+    '<div class="hd-chart-app-panel hd-chart-app-%s">%s</div>',
+    safe_id,
+    build_svg_dual_line_chart(
+      cur_df = app_ts_cur, base_df = app_ts_base, y_col = "failed_tx", y_label = "Errors",
+      cur_color = "#DC2626", base_color = "#64748B",
+      svg_w = 520, svg_h = 115
+    )
+  )
+}
 
 chart1_card_html <- sprintf(
   '<div class="hd-chart-card">
@@ -1127,19 +1239,12 @@ chart1_card_html <- sprintf(
        <div class="hd-chart-legend">
          <span><span class="hd-legend-line" style="background:#2563EB;"></span>Current (#%s)</span>
          <span><span class="hd-legend-line" style="background:#64748B;border-top:2px dashed #64748B;height:0;"></span>Baseline (#%s)</span>
-         <span style="color:#DC2626;"><span class="hd-legend-line" style="background:#DC2626;"></span>SLA (%s ms)</span>
+         <span style="color:#DC2626;"><span class="hd-legend-line" style="background:#DC2626;"></span>SLA</span>
        </div>
      </div>
      %s
    </div>',
-  rt_metric_name, current_run_id, baseline_run_id, format(rt_default, big.mark = ","), chart1_svg
-)
-
-# Chart 2: Throughput (TPS) & Virtual User Concurrency Profile Over Time
-chart2_svg <- build_svg_dual_line_chart(
-  cur_df = ts_cur, base_df = ts_base, y_col = "tps", y_label = "TPS",
-  cur_color = "#16A34A", base_color = "#64748B",
-  sec_col = "active_users", sec_label = "Active VUs"
+  rt_metric_name, current_run_id, baseline_run_id, paste(unlist(chart1_panels), collapse = "\n")
 )
 
 chart2_card_html <- sprintf(
@@ -1149,12 +1254,12 @@ chart2_card_html <- sprintf(
        <div class="hd-chart-legend">
          <span><span class="hd-legend-line" style="background:#16A34A;"></span>Current TPS (#%s)</span>
          <span><span class="hd-legend-line" style="background:#64748B;border-top:2px dashed #64748B;height:0;"></span>Baseline TPS (#%s)</span>
-         <span style="color:#6366F1;"><span class="hd-legend-dot" style="background:#C7D2FE;"></span>Active VUs (Peak: %s)</span>
+         <span style="color:#6366F1;"><span class="hd-legend-dot" style="background:#C7D2FE;"></span>Active VUs</span>
        </div>
      </div>
      %s
    </div>',
-  current_run_id, baseline_run_id, vu_actual, chart2_svg
+  current_run_id, baseline_run_id, paste(unlist(chart2_panels), collapse = "\n")
 )
 
 # Chart 3: Scenario P95 Response Time: Current vs Baseline (Stacked by Transaction + Clickable Scenario Modal)
@@ -1384,7 +1489,7 @@ scen_bars_html <- paste(
     )
 
     sprintf(
-      "<label for='hd-scen-drill-%s' class='hd-scen-stack-row' style='display:block;margin-bottom:10px;cursor:pointer;'>
+      "<label for='hd-scen-drill-%s' class='hd-scen-stack-row hd-chart-scen-app-%s' style='display:block;margin-bottom:10px;cursor:pointer;'>
          <div style='display:flex;justify-content:space-between;align-items:center;font-size:11px;margin-bottom:3px;flex-wrap:wrap;gap:4px;'>
            <span style='font-family:Consolas,monospace;font-weight:700;color:#0F172A;'>%s <span style='color:#64748B;font-weight:500;'>(%.2f TPS vs %.2f Base TPS &bull; %d tx)</span> <span style='font-size:9.5px;color:#2563EB;font-weight:600;margin-left:4px;'>🔍 View Transactions</span></span>
            <span><strong style='color:#0F172A;'>Total %s: %s ms</strong> vs <span style='color:#64748B;'>%s ms Base</span> %s</span>
@@ -1404,7 +1509,7 @@ scen_bars_html <- paste(
            </div>
          </div>
        </label>",
-      drill_id,
+      drill_id, safe_dom_id(s$app_name),
       s$logical_scenario, s$throughput, ifelse(is.na(s$base_tps), 0, s$base_tps), n_tx,
       rt_metric_name, format(round(total_cur_v), big.mark = ","), format(round(total_base_v), big.mark = ","), delta_b,
       cur_w, cur_segments_html,
@@ -1431,38 +1536,52 @@ chart3_card_html <- sprintf(
 )
 
 # Chart 4: Error Timeline (Errors/Min) & Top Failing Transactions Pareto
-chart4_err_svg <- build_svg_dual_line_chart(
-  cur_df = ts_cur, base_df = ts_base, y_col = "failed_tx", y_label = "Errors",
-  cur_color = "#DC2626", base_color = "#64748B",
-  svg_w = 520, svg_h = 115
-)
-
-pareto_top5 <- error_summary_cur %>%
-  slice_head(n = 5) %>%
-  mutate(
-    share_pct = if (total_run_errors > 0) round((errors / total_run_errors) * 100, 1) else 0,
-    cum_pct   = round(cumsum(share_pct), 1)
-  )
-
-pareto_bars_html <- if (nrow(pareto_top5) > 0) {
+render_pareto_bars <- function(target_app = "ALL") {
+  df <- if (target_app == "ALL") {
+    error_summary_cur
+  } else {
+    error_summary_cur %>% filter(app_name == target_app)
+  }
+  tot_app_err <- sum(df$errors, na.rm = TRUE)
+  top5 <- df %>% slice_head(n = 5)
+  if (nrow(top5) == 0 || tot_app_err == 0) {
+    return("<div style='color:#16A34A;font-size:11px;padding:6px 0;'>✓ Zero transaction errors recorded.</div>")
+  }
+  top5 <- top5 %>%
+    mutate(
+      share_pct = round((errors / tot_app_err) * 100, 1),
+      cum_pct   = round(cumsum(share_pct), 1)
+    )
   paste(
-    lapply(seq_len(nrow(pareto_top5)), function(i) {
-      p <- pareto_top5[i, ]
+    lapply(seq_len(nrow(top5)), function(i) {
+      p <- top5[i, ]
       sprintf(
         "<div style='display:flex;align-items:center;gap:6px;font-size:10.5px;margin-bottom:3px;'>
-           <span style='font-family:Consolas,monospace;font-weight:600;color:#1E293B;width:210px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'>%s</span>
+           <span style='font-family:Consolas,monospace;font-weight:600;color:#1E293B;width:210px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;' title='%s'>%s</span>
            <div style='flex:1;background:#F1F5F9;height:7px;border-radius:3px;overflow:hidden;'>
              <div style='width:%s%%;height:100%%;background:#DC2626;border-radius:3px;'></div>
            </div>
            <span style='font-family:Consolas,monospace;font-weight:700;color:#DC2626;width:95px;text-align:right;'>%s (%s%% | Σ%s%%)</span>
          </div>",
-        p$label, p$share_pct, format(p$errors, big.mark = ","), p$share_pct, p$cum_pct
+        htmlEscape(p$label), htmlEscape(p$label), p$share_pct, format(p$errors, big.mark = ","), p$share_pct, p$cum_pct
       )
     }),
     collapse = "\n"
   )
-} else {
-  "<div style='color:#16A34A;font-size:11px;'>✓ Zero errors recorded.</div>"
+}
+
+chart4_pareto_panels[["ALL"]] <- sprintf(
+  '<div class="hd-chart-app-panel hd-chart-app-ALL">%s</div>',
+  render_pareto_bars("ALL")
+)
+
+for (app in unique_charts_apps) {
+  safe_id <- safe_dom_id(app)
+  chart4_pareto_panels[[safe_id]] <- sprintf(
+    '<div class="hd-chart-app-panel hd-chart-app-%s">%s</div>',
+    safe_id,
+    render_pareto_bars(app)
+  )
 }
 
 chart4_card_html <- sprintf(
@@ -1480,16 +1599,34 @@ chart4_card_html <- sprintf(
        %s
      </div>
    </div>',
-  current_run_id, baseline_run_id, chart4_err_svg, pareto_bars_html
+  current_run_id, baseline_run_id,
+  paste(unlist(chart4_err_panels), collapse = "\n"),
+  paste(unlist(chart4_pareto_panels), collapse = "\n")
 )
 
 charts_tab_ids <- c("GRID", "TIMELINE", "SCENARIOS", "ERRORS")
 
+charts_app_tabs_html <- paste(
+  sprintf('<label for="hd-charts-app-ALL" class="hd-modal-tab-btn hd-charts-app-pill" data-charts-app="ALL">All Applications (%d)</label>', nrow(scen_comp_df)),
+  paste(sapply(unique_charts_apps, function(app) {
+    safe_id <- safe_dom_id(app)
+    cnt <- sum(scen_comp_df$app_name == app)
+    sprintf('<label for="hd-charts-app-%s" class="hd-modal-tab-btn hd-charts-app-pill" data-charts-app="%s">%s (%d)</label>', safe_id, safe_id, htmlEscape(app), cnt)
+  }), collapse = ""),
+  sep = ""
+)
+
 charts_tabs_html <- paste0(
+  '<div class="hd-charts-view-filter" style="display:inline-flex;gap:4px;align-items:center;">',
   '<label for="hd-tab-charts-GRID" class="hd-modal-tab-btn" data-mode="charts" data-tab-id="GRID">📊 Executive 2x2 Grid</label>',
   '<label for="hd-tab-charts-TIMELINE" class="hd-modal-tab-btn" data-mode="charts" data-tab-id="TIMELINE">⏱ Latency &amp; Load Timelines</label>',
   '<label for="hd-tab-charts-SCENARIOS" class="hd-modal-tab-btn" data-mode="charts" data-tab-id="SCENARIOS">🧭 Scenario vs Baseline</label>',
-  '<label for="hd-tab-charts-ERRORS" class="hd-modal-tab-btn" data-mode="charts" data-tab-id="ERRORS">⚠️ Error Timeline &amp; Pareto</label>'
+  '<label for="hd-tab-charts-ERRORS" class="hd-modal-tab-btn" data-mode="charts" data-tab-id="ERRORS">⚠️ Error Timeline &amp; Pareto</label>',
+  '</div>',
+  '<div class="hd-charts-app-filter">',
+  '<span style="font-size:11px;font-weight:700;color:#64748B;text-transform:uppercase;">App:</span>',
+  charts_app_tabs_html,
+  '</div>'
 )
 
 charts_panels_html <- paste(
@@ -1995,12 +2132,53 @@ scen_drill_pills_html <- paste(
     s   <- scen_comp_df[i, ]
     dot_col <- if (isTRUE(s$logical_rt_passed)) "#16A34A" else "#DC2626"
     sprintf(
-      '<label for="hd-scen-drill-%s" class="hd-modal-tab-btn hd-scen-pill"><span style="display:inline-block;width:7px;height:7px;border-radius:50%%;background:%s;margin-right:5px;"></span>%s</label>',
-      sid, dot_col, htmlEscape(s$logical_scenario)
+      '<label for="hd-scen-drill-%s" class="hd-modal-tab-btn hd-scen-pill hd-chart-scen-app-%s"><span style="display:inline-block;width:7px;height:7px;border-radius:50%%;background:%s;margin-right:5px;"></span>%s</label>',
+      sid, safe_dom_id(s$app_name), dot_col, htmlEscape(s$logical_scenario)
     )
   }),
   collapse = "\n"
 )
+
+# State machines for App filtering in Scenario Breakdown and Executive Charts
+scen_app_ids <- c("ALL", sapply(unique_scen_apps, safe_dom_id))
+st_scen_app_inputs <- paste(sapply(seq_along(scen_app_ids), function(idx) {
+  aid <- scen_app_ids[idx]
+  chk <- if (idx == 1) " checked" else ""
+  sprintf('<input type="radio" name="hd-scen-filter-app" id="hd-scen-app-%s" class="hd-state-input"%s />', aid, chk)
+}), collapse = "\n")
+
+st_scen_app_css <- paste(c(
+  '#hd-scen-app-ALL:checked ~ .hd-viewport label[for="hd-scen-app-ALL"] { background:#2563EB !important; color:#FFFFFF !important; border-color:#2563EB !important; }',
+  sapply(unique_scen_apps, function(app) {
+    aid <- safe_dom_id(app)
+    paste0(
+      sprintf('#hd-scen-app-%s:checked ~ .hd-viewport label[for="hd-scen-app-%s"] { background:#2563EB !important; color:#FFFFFF !important; border-color:#2563EB !important; }\n', aid, aid),
+      sprintf('#hd-scen-app-%s:checked ~ .hd-viewport .hd-scen-table-row:not(.hd-scen-row-app-%s) { display:none !important; }\n', aid, aid),
+      sprintf('#hd-scen-app-%s:checked ~ .hd-viewport .hd-scen-col-app { display:none !important; }', aid)
+    )
+  })
+), collapse = "\n")
+
+st_charts_app_inputs <- paste(sapply(seq_along(chart_app_ids), function(idx) {
+  aid <- chart_app_ids[idx]
+  chk <- if (idx == 1) " checked" else ""
+  sprintf('<input type="radio" name="hd-charts-app-filter" id="hd-charts-app-%s" class="hd-state-input"%s />', aid, chk)
+}), collapse = "\n")
+
+st_charts_app_css <- paste(c(
+  '.hd-chart-app-panel { display: none; }',
+  '#hd-charts-app-ALL:checked ~ .hd-viewport label[for="hd-charts-app-ALL"] { background:#2563EB !important; color:#FFFFFF !important; border-color:#2563EB !important; }',
+  '#hd-charts-app-ALL:checked ~ .hd-viewport .hd-chart-app-panel.hd-chart-app-ALL { display:block !important; }',
+  sapply(unique_charts_apps, function(app) {
+    aid <- safe_dom_id(app)
+    paste0(
+      sprintf('#hd-charts-app-%s:checked ~ .hd-viewport label[for="hd-charts-app-%s"] { background:#2563EB !important; color:#FFFFFF !important; border-color:#2563EB !important; }\n', aid, aid),
+      sprintf('#hd-charts-app-%s:checked ~ .hd-viewport .hd-chart-app-panel.hd-chart-app-%s { display:block !important; }\n', aid, aid),
+      sprintf('#hd-charts-app-%s:checked ~ .hd-viewport .hd-scen-stack-row:not(.hd-chart-scen-app-%s) { display:none !important; }\n', aid, aid),
+      sprintf('#hd-charts-app-%s:checked ~ .hd-viewport .hd-scen-pill:not(.hd-chart-scen-app-%s) { display:none !important; }', aid, aid)
+    )
+  })
+), collapse = "\n")
 
 scen_tx_modal_html <- paste0(
   '<div id="hd-scen-tx-modal-backdrop">',
@@ -2041,6 +2219,8 @@ root_state_inputs_html <- paste(
   '<input type="radio" name="hd-modal-mode" id="hd-mode-glossary" class="hd-state-input" />',
   if (has_evidence) '<input type="radio" name="hd-modal-mode" id="hd-mode-evidence" class="hd-state-input" />' else '',
   scen_drill_inputs,
+  st_scen_app_inputs,
+  st_charts_app_inputs,
   st_charts$inputs,
   st_sla$inputs,
   st_scenario$inputs,
@@ -2048,7 +2228,7 @@ root_state_inputs_html <- paste(
   st_error$inputs,
   st_glossary$inputs,
   st_evidence$inputs,
-  sprintf('<style>\n%s\n</style>', paste(c(st_charts$css, st_sla$css, st_scenario$css, st_label$css, st_error$css, st_glossary$css, st_evidence$css, scen_drill_css), collapse = "\n")),
+  sprintf('<style>\n%s\n</style>', paste(c(st_charts$css, st_sla$css, st_scenario$css, st_label$css, st_error$css, st_glossary$css, st_evidence$css, scen_drill_css, st_scen_app_css, st_charts_app_css), collapse = "\n")),
   sep = "\n"
 )
 
@@ -2152,7 +2332,7 @@ modal_html <- paste0(
     }
   };
 
-  function showDrilldown(mode, tabId) {
+  function showDrilldown(mode, tabId, appId) {
     var modeRadio = document.getElementById("hd-mode-" + mode);
     if (modeRadio) modeRadio.checked = true;
     if (tabId) {
@@ -2164,11 +2344,24 @@ modal_html <- paste0(
       }
       if (tabRadio) tabRadio.checked = true;
     }
+    if (mode === "charts") {
+      var targetChartApp = appId;
+      if (!targetChartApp) {
+        var checkedScenApp = document.querySelector("input[name=hd-scen-filter-app]:checked");
+        if (checkedScenApp && checkedScenApp.id) {
+          targetChartApp = checkedScenApp.id.replace("hd-scen-app-", "");
+        }
+      }
+      if (targetChartApp) {
+        var chartAppRadio = document.getElementById("hd-charts-app-" + targetChartApp);
+        if (chartAppRadio) chartAppRadio.checked = true;
+      }
+    }
     var body = document.getElementById("hd-modal-body");
     if (body) body.scrollTop = 0;
   }
 
-  window.openChartsModal   = function(viewId) { showDrilldown("charts",   viewId || "GRID"); };
+  window.openChartsModal   = function(viewId, appId) { showDrilldown("charts",   viewId || "GRID", appId); };
   window.openSlaModal      = function(appId)  { showDrilldown("sla",      appId  || "ALL"); };
   window.openScenarioModal = function(appId)  { showDrilldown("scenario", appId  || "ALL"); };
   window.openLabelModal    = function(scenId) { showDrilldown("label",    scenId || "BREACHES"); };
@@ -2191,9 +2384,22 @@ modal_html <- paste0(
     if (trigger) {
       var mode = trigger.getAttribute("data-open-mode");
       var tab  = trigger.getAttribute("data-open-tab");
+      var app  = trigger.getAttribute("data-app");
       if (mode && tab) {
-        showDrilldown(mode, tab);
+        showDrilldown(mode, tab, app);
       }
+    }
+    var chartAppTrigger = e.target.closest("[data-charts-app]");
+    if (chartAppTrigger) {
+      var targetApp = chartAppTrigger.getAttribute("data-charts-app");
+      var radio = document.getElementById("hd-charts-app-" + targetApp);
+      if (radio) radio.checked = true;
+    }
+    var scenAppTrigger = e.target.closest("[data-scen-app]");
+    if (scenAppTrigger) {
+      var targetScenApp = scenAppTrigger.getAttribute("data-scen-app");
+      var scenRadio = document.getElementById("hd-scen-app-" + targetScenApp);
+      if (scenRadio) scenRadio.checked = true;
     }
     var tabBtn = e.target.closest(".hd-modal-tab-btn");
     if (tabBtn) {

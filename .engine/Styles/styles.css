@@ -1836,4 +1836,66 @@ body.dark-theme .hd-scen-tx-panel-summary span,
   color: #E2E8F0 !important;
 }
 
+/* Scenario Breakdown App Filter Bar */
+.hd-scen-filter-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-wrap: wrap;
+}
+
+.hd-scen-app-pill {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1.5px 6px;
+  border-radius: 4px;
+  background: #F1F5F9;
+  color: #475569;
+  border: 1px solid #CBD5E1;
+  cursor: pointer;
+  white-space: nowrap;
+  line-height: 1.3;
+  transition: all 0.12s ease;
+  user-select: none;
+}
+
+.hd-scen-app-pill:hover {
+  background: #E2E8F0;
+  color: #0F172A;
+  border-color: #94A3B8;
+}
+
+/* Executive Charts App Filter */
+.hd-charts-app-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 10px;
+  padding-left: 10px;
+  border-left: 1px solid #CBD5E1;
+  flex-wrap: wrap;
+}
+
+.hd-charts-app-pill {
+  font-size: 11px;
+}
+
+body.dark-theme .hd-scen-app-pill,
+#hd-theme-toggle-state:checked ~ .hd-viewport .hd-scen-app-pill {
+  background: #1E293B;
+  color: #94A3B8;
+  border-color: #334155;
+}
+
+body.dark-theme .hd-scen-app-pill:hover,
+#hd-theme-toggle-state:checked ~ .hd-viewport .hd-scen-app-pill:hover {
+  background: #334155;
+  color: #F8FAFC;
+}
+
+body.dark-theme .hd-charts-app-filter,
+#hd-theme-toggle-state:checked ~ .hd-viewport .hd-charts-app-filter {
+  border-left-color: #334155 !important;
+}
+
 
