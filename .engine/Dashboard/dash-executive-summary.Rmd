@@ -605,8 +605,15 @@ api_key <- tryCatch({
     here::here("secrets.yaml")
   } else if (file.exists(here::here(".engine/Archived/secrets.yaml"))) {
     here::here(".engine/Archived/secrets.yaml")
+  } else if (file.exists("secrets.yaml")) {
+    "secrets.yaml"
+  } else if (file.exists("../secrets.yaml")) {
+    "../secrets.yaml"
   } else NULL
-  if (!is.null(sec_file)) yaml::read_yaml(sec_file)$amplify_token else NULL
+  if (!is.null(sec_file)) {
+    k <- yaml::read_yaml(sec_file)$amplify_token
+    if (!is.null(k)) trimws(as.character(k)) else NULL
+  } else NULL
 }, error = function(e) NULL)
 
 cfg_ai_enabled <- tryCatch({
@@ -614,13 +621,40 @@ cfg_ai_enabled <- tryCatch({
     params_cfg
   } else if (file.exists(here::here("config.yaml"))) {
     yaml::read_yaml(here::here("config.yaml"))
+  } else if (file.exists("config.yaml")) {
+    yaml::read_yaml("config.yaml")
+  } else if (file.exists("../config.yaml")) {
+    yaml::read_yaml("../config.yaml")
   } else list()
   isTRUE(as.logical(cfg$ai_summary_enabled)) || identical(tolower(as.character(cfg$ai_summary_enabled)), "true")
 }, error = function(e) FALSE)
 
 if (isTRUE(cfg_ai_enabled) && !is.null(api_key) && nzchar(api_key)) {
   ai_prompt <- sprintf(
-    "You are a performance test analyst. Produce an executive summary with two paragraphs and exactly 3 bullet points of next steps.\nApplication: %s (%s)\nTest Type: %s\nLoad: %s virtual users with %s\nThroughput: %.2f TPS\nError Rate: %.2f%%\nLatency: %s ms (%s vs Baseline #%s: %s)\nOverall Status: %s\nBreaches: %d (%s), worst: %s at %s ms vs %s ms SLA\nFlow Theme: %s\n\nOutput format:\nPARAGRAPH 1: Context, workload profile, throughput, errors, baseline comparison.\nPARAGRAPH 2: Release criteria verdict, SLA breaches details, worst transaction, overall status.\nNext steps:\n- Step 1\n- Step 2\n- Step 3",
+    "You are a Senior Performance Engineering Principal writing an executive assessment for C-level leadership and programme stakeholders.
+Language & Style Guidelines:
+- Use British English spelling and conventions throughout (e.g., optimised, prioritised, analysed, behaviour, programme, latency characteristics).
+- Maintain an authoritative, concise, objective executive tone. Avoid filler or generic phrases.
+- Produce exactly two concise paragraphs for the assessment and exactly 3 targeted bullet points of next steps.
+
+Test Profile & Evidence:
+Application: %s (%s)
+Test Type: %s
+Workload: %s virtual users with %s
+Throughput: %.2f TPS
+Error Rate: %.2f%%
+Latency: %s ms (%s vs Baseline #%s: %s)
+Overall Status: %s
+Breaches: %d (%s), worst: %s at %s ms vs %s ms SLA
+Flow Theme: %s
+
+Output Format:
+PARAGRAPH 1: Context, workload profile, throughput stability, error rates, and baseline comparison.
+PARAGRAPH 2: Release readiness verdict, business risk of SLA breaches, worst transaction impact, and definitive PASS/FAIL governance verdict.
+Next steps:
+- Step 1: Specific root cause investigation or triage action
+- Step 2: Remediation or configuration tuning action
+- Step 3: Retest or release gating action",
     app_names_str, env_str, test_type_str, vu_actual, duration_desc,
     current_run$throughput[1], current_run$error_rate[1],
     current_rt_fmt, rt_metric_name, baseline_run_id, rt_comp_str,
@@ -643,11 +677,13 @@ if (isTRUE(cfg_ai_enabled) && !is.null(api_key) && nzchar(api_key)) {
           parameters = list(temperature = 0.3)
         ), auto_unbox = TRUE),
         encode = "json",
-        httr::timeout(10)
+        httr::timeout(35)
       )
       if (httr::status_code(resp) == 200) {
         parsed <- jsonlite::fromJSON(httr::content(resp, "text", encoding = "UTF-8"), simplifyVector = FALSE)
-        if (!is.null(parsed$assistant_resp) && !grepl("unauthorized|error", tolower(parsed$assistant_resp))) {
+        if (!is.null(parsed$assistant_resp) &&
+            nchar(trimws(parsed$assistant_resp)) > 30 &&
+            !grepl("^\\s*(unauthorized|error\\b|invalid\\s*token)", tolower(parsed$assistant_resp), perl = TRUE)) {
           resp_text <- parsed$assistant_resp
         }
       }
@@ -659,21 +695,51 @@ if (isTRUE(cfg_ai_enabled) && !is.null(api_key) && nzchar(api_key)) {
     if (grepl("---", ai_text)) {
       ai_text <- trimws(tail(strsplit(ai_text, "---")[[1]], n = 1))
     }
-    parts <- strsplit(ai_text, "\n\n+")[[1]]
-    p_paras <- grep("^[-*•]", parts, invert = TRUE, value = TRUE)
-    p_paras <- grep("(?i)next steps:", p_paras, invert = TRUE, value = TRUE)
-    bullet_parts <- grep("^[-*•]", parts, value = TRUE)
+
+    clean_p <- function(p) {
+      trimws(sub("^(?i)(PARAGRAPH\\s*\\d*[:.\\-\\s]*(Context|Verdict)?[:.\\-\\s]*|Context[:.\\-\\s]*|Verdict[:.\\-\\s]*)\\s*", "", p, perl = TRUE))
+    }
+    clean_bullet <- function(b) {
+      trimws(sub("^([-*•]|\\d+[.)])?\\s*(Step\\s*\\d+[:\\s-]*|\\d+[:.)]\\s*)?", "", b, perl = TRUE))
+    }
+
+    # Separate narrative paragraphs from next steps section
+    narrative_text <- ai_text
+    bullets_text <- ""
+
+    if (grepl("(?i)\n\\s*(Next steps|Recommended actions|Key actions)[:\\s]*", ai_text, perl = TRUE)) {
+      secs <- strsplit(ai_text, "(?i)\n\\s*(Next steps|Recommended actions|Key actions)[:\\s]*", perl = TRUE)[[1]]
+      narrative_text <- secs[1]
+      bullets_text <- paste(secs[-1], collapse = "\n")
+    } else {
+      raw_lines <- unlist(strsplit(ai_text, "\r?\n"))
+      first_b_idx <- which(grepl("^\\s*[-*•]|^(?i)\\s*step\\s*\\d+|\\b\\d+[.)]\\s+", raw_lines, perl = TRUE))[1]
+      if (!is.na(first_b_idx) && first_b_idx > 1) {
+        narrative_text <- paste(raw_lines[1:(first_b_idx - 1)], collapse = "\n")
+        bullets_text <- paste(raw_lines[first_b_idx:length(raw_lines)], collapse = "\n")
+      }
+    }
+
+    # Extract paragraphs
+    p_parts <- strsplit(trimws(narrative_text), "\n\n+")[[1]]
+    p_paras <- sapply(p_parts, clean_p, USE.NAMES = FALSE)
+    p_paras <- p_paras[nzchar(p_paras)]
 
     if (length(p_paras) >= 2) {
       final_p1 <- p_paras[1]
       final_p2 <- p_paras[2]
+    } else if (length(p_paras) == 1) {
+      final_p1 <- p_paras[1]
     }
-    if (length(bullet_parts) > 0) {
-      lines <- unlist(strsplit(bullet_parts, "\n"))
-      bullets <- grep("^[-*•]", lines, value = TRUE)
-      if (length(bullets) >= 2) {
-        final_next_steps <- sub("^[-*•]\\s*", "", bullets)
-      }
+
+    # Extract bullets
+    b_lines <- trimws(unlist(strsplit(bullets_text, "\r?\n")))
+    b_matched <- grep("^[-*•]|^(?i)step\\s*\\d+|\\b\\d+[.)]\\s*", b_lines, perl = TRUE, value = TRUE)
+    b_cleaned <- sapply(b_matched, clean_bullet, USE.NAMES = FALSE)
+    b_cleaned <- b_cleaned[nzchar(b_cleaned)]
+
+    if (length(b_cleaned) >= 2) {
+      final_next_steps <- b_cleaned
     }
   }
 }
