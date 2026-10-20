@@ -4,7 +4,7 @@ params:
   version: "v2.0" # Report version displayed in navbar (e.g. v2.0, 1.0.1)
 
 # File Locations (Relative to project root)
-rmd_template: ".engine/storyteller.Rmd" # DO NOT UPDATE
+rmd_template: ".engine/dashboard.Rmd"
 # output_dir: "C:\\Projects\\report_tool\\aper-delta-v2\\aper-delta-v2\\Reports" # Where the HTML files will go e.g. //<host>/shared/Performance-JMeter/reports
 # database_path: "C:\\Projects\\report_tool\\aper-delta-v2\\aper-delta-v2\\Data\\Performance_Vault.db" # Update if needed e.g. //<host>/shared/Performance-JMeter/database/Performance_Vault.db
 

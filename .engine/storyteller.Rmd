@@ -14,6 +14,8 @@ params:
   project: "Perf Project"
   scenario: "Registration_Flow"
   baseline: "run_001"
+  current_run: "run_002"
+  baseline_run: "run_001"
   runs: !r c("run_001", "run_002")
   label_filter: ""
   excluded_labels: !r character(0)
@@ -324,6 +326,75 @@ sql_timeseries <- sprintf("
    is_pass_expr, is_pass_expr, is_pass_expr, rt_percentile, target_table, where_clause_t)
 
 db_timeseries <- dbGetQuery(con, sql_timeseries)
+
+# 3H. Apdex User Experience & Performance Index per Run
+rt_overrides <- if (!is.null(rt_sla_config)) rt_sla_config$overrides else NULL
+rt_threshold_lookup <- if (!is.null(rt_overrides) && length(rt_overrides) > 0) {
+  setNames(
+    sapply(rt_overrides, function(x) as.numeric(x$threshold)),
+    sapply(rt_overrides, function(x) as.character(x$label))
+  )
+} else {
+  c()
+}
+
+build_sql_target_t <- function(lookup, default_val) {
+  if (length(lookup) == 0) {
+    return(sprintf("%.1f", as.numeric(default_val)))
+  }
+  prefixes <- names(lookup)
+  prefixes <- prefixes[order(nchar(prefixes), decreasing = TRUE)]
+  whens <- sapply(prefixes, function(p) {
+    val <- as.numeric(lookup[[p]])
+    safe_p <- gsub("'", "''", p)
+    sprintf("WHEN label LIKE '%s%%' THEN %.1f", safe_p, val)
+  })
+  sprintf("(CASE %s ELSE %.1f END)", paste(whens, collapse = " "), as.numeric(default_val))
+}
+
+sql_target_t_expr <- build_sql_target_t(rt_threshold_lookup, rt_default)
+
+sql_apdex <- sprintf("
+  WITH enriched AS (
+    SELECT
+      run_id,
+      app_name,
+      elapsed,
+      CASE WHEN %s THEN 1 ELSE 0 END AS is_pass,
+      %s AS target_t
+    FROM %s
+    %s
+  )
+  SELECT
+    run_id,
+    'ALL' AS app_name,
+    COUNT(*) AS total_tx,
+    SUM(CASE WHEN is_pass = 1 AND elapsed <= target_t THEN 1 ELSE 0 END) AS satisfied,
+    SUM(CASE WHEN is_pass = 1 AND elapsed > target_t AND elapsed <= (4.0 * target_t) THEN 1 ELSE 0 END) AS tolerating,
+    SUM(CASE WHEN is_pass = 0 OR elapsed > (4.0 * target_t) THEN 1 ELSE 0 END) AS frustrated,
+    ROUND((SUM(CASE WHEN is_pass = 1 AND elapsed <= target_t THEN 1 ELSE 0 END) +
+           0.5 * SUM(CASE WHEN is_pass = 1 AND elapsed > target_t AND elapsed <= (4.0 * target_t) THEN 1 ELSE 0 END)) /
+           CAST(COUNT(*) AS DOUBLE), 2) AS apdex_score
+  FROM enriched
+  GROUP BY run_id
+  UNION ALL
+  SELECT
+    run_id,
+    app_name,
+    COUNT(*) AS total_tx,
+    SUM(CASE WHEN is_pass = 1 AND elapsed <= target_t THEN 1 ELSE 0 END) AS satisfied,
+    SUM(CASE WHEN is_pass = 1 AND elapsed > target_t AND elapsed <= (4.0 * target_t) THEN 1 ELSE 0 END) AS tolerating,
+    SUM(CASE WHEN is_pass = 0 OR elapsed > (4.0 * target_t) THEN 1 ELSE 0 END) AS frustrated,
+    ROUND((SUM(CASE WHEN is_pass = 1 AND elapsed <= target_t THEN 1 ELSE 0 END) +
+           0.5 * SUM(CASE WHEN is_pass = 1 AND elapsed > target_t AND elapsed <= (4.0 * target_t) THEN 1 ELSE 0 END)) /
+           CAST(COUNT(*) AS DOUBLE), 2) AS apdex_score
+  FROM enriched
+  GROUP BY run_id, app_name
+", is_pass_expr, sql_target_t_expr, target_table, where_clause,
+   is_pass_expr, sql_target_t_expr, target_table, where_clause)
+
+db_apdex <- dbGetQuery(con, sql_apdex)
+db_latency_bands <- db_apdex
 
 dbDisconnect(con)
 ```

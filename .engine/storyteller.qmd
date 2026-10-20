@@ -9,6 +9,8 @@ params:
   project: "Perf Project"
   scenario: "Registration_Flow"
   baseline: "run_001"
+  current_run: "run_002"
+  baseline_run: "run_001"
   runs:
     - "run_001"
     - "run_002"
@@ -269,6 +271,7 @@ sql_error_details <- sprintf("
 
 db_error_details <- dbGetQuery(con, sql_error_details)
 
+# 3G. 1-Minute Bucketed Time-Series per Run (for lightweight Executive Charts Modal)
 where_clause_t <- sprintf("WHERE t.run_id IN (%s)%s%s", formatted_run_ids, sql_filter_clause, sql_exclusion_clause)
 sql_timeseries <- sprintf("
   WITH run_bounds AS (
@@ -279,6 +282,7 @@ sql_timeseries <- sprintf("
   )
   SELECT
     t.run_id,
+    'ALL' AS app_name,
     CAST(FLOOR(date_diff('seconds', b.min_ts, t.timestamp) / 60.0) AS INTEGER) AS elapsed_min,
     COUNT(*) AS total_tx,
     SUM(CASE WHEN %s THEN 1 ELSE 0 END) AS passed_tx,
@@ -291,8 +295,25 @@ sql_timeseries <- sprintf("
   %s
   GROUP BY t.run_id, elapsed_min
   HAVING elapsed_min >= 0
-  ORDER BY t.run_id, elapsed_min ASC
-", target_table, where_clause, is_pass_expr, is_pass_expr, is_pass_expr, rt_percentile, target_table, where_clause_t)
+  UNION ALL
+  SELECT
+    t.run_id,
+    t.app_name,
+    CAST(FLOOR(date_diff('seconds', b.min_ts, t.timestamp) / 60.0) AS INTEGER) AS elapsed_min,
+    COUNT(*) AS total_tx,
+    SUM(CASE WHEN %s THEN 1 ELSE 0 END) AS passed_tx,
+    SUM(CASE WHEN NOT (%s) THEN 1 ELSE 0 END) AS failed_tx,
+    ROUND(SUM(CASE WHEN %s THEN 1 ELSE 0 END) / 60.0, 2) AS tps,
+    ROUND(QUANTILE_CONT(t.elapsed, %f), 0) AS pct_rt,
+    COUNT(DISTINCT t.user_index) AS active_users
+  FROM %s t
+  JOIN run_bounds b ON t.run_id = b.run_id
+  %s
+  GROUP BY t.run_id, t.app_name, elapsed_min
+  HAVING elapsed_min >= 0
+  ORDER BY run_id, app_name, elapsed_min ASC
+", target_table, where_clause, is_pass_expr, is_pass_expr, is_pass_expr, rt_percentile, target_table, where_clause_t,
+   is_pass_expr, is_pass_expr, is_pass_expr, rt_percentile, target_table, where_clause_t)
 
 db_timeseries <- dbGetQuery(con, sql_timeseries)
 

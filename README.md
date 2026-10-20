@@ -1,12 +1,13 @@
 # APER Delta — Complete Usage Guide
 
 APER Delta turns raw **JMeter** or **NeoLoad** CSV results into a single self-contained
-interactive HTML report that compares up to **3 test runs** — charts, tables, SLA pass/fail
-evaluation and an optional AI-written executive summary.
+interactive HTML executive report comparing **two test runs (Current vs Base)** or evaluating
+a single run standalone — with an executive narrative summary, 2x2 KPI metrics, SLA pass/fail
+evaluation, application health matrix, failure drilldown tables, and interactive modals.
 
 You do not need to know R. Everything is driven by an interactive menu
-(`frontdoor.ps1` on Windows, `frontdoor.sh` on Linux/macOS) which calls the R engine
-(`.engine/worker.R`) for you.
+(`launch.ps1` on Windows, `launch.sh` on Linux/macOS; legacy `frontdoor.ps1`/`frontdoor.sh` supported) which calls the R engine
+(`.engine/engine.R`, legacy `.engine/worker.R` wrapper supported) for you.
 
 ---
 
@@ -25,7 +26,7 @@ You do not need to know R. Everything is driven by an interactive menu
 11. [Reading the report](#11-reading-the-report)
 12. [SLA configuration](#12-sla-configuration)
 13. [Chart visibility](#13-chart-visibility)
-14. [AI summary setup](#14-ai-summary-setup)
+14. [AI summary & hybrid architecture](#14-ai-summary--hybrid-architecture)
 15. [Observations (editable notes in the report)](#15-observations-editable-notes-in-the-report)
 16. [Maintaining the vault](#16-maintaining-the-vault)
 17. [Troubleshooting](#17-troubleshooting)
@@ -36,19 +37,21 @@ You do not need to know R. Everything is driven by an interactive menu
 ## 1. How the tool works
 
 ```
-frontdoor.ps1 / frontdoor.sh      interactive menu — locates Rscript, asks questions
+launch.ps1 / launch.sh            interactive menu — locates Rscript, asks questions (frontdoor alias)
         │
         ▼
-.engine/worker.R                  CLI dispatcher (--opMode = menu | register | report)
-        │                         also bootstraps R packages into ./RLibs
+.engine/engine.R                  CLI dispatcher (--opMode = menu | register | report; worker.R alias)
+        │                         bootstraps R packages into ./RLibs
         │                         resolves the vault & output paths (local, absolute or UNC)
+        │                         auto-detects Quarto CLI / Pandoc
+        │
         ├── register ──► <database_path>                (DuckDB "vault")
-        └── report   ──► .engine/storyteller.Rmd        (Flexdashboard template)
-                              ├── .engine/Dashboard/*.Rmd   KPI boxes, SLA, AI summary
-                              ├── .engine/Tables/*.Rmd      DT tables
-                              ├── .engine/Charts/*.Rmd      Plotly charts
-                              ├── .engine/Utilities/*.R     metrics + theming helpers
-                              └── .engine/Styles/*          CSS, icons
+        └── report   ──► .engine/dashboard.qmd / .Rmd   (Master template)
+                              ├── .engine/Dashboard/*.Rmd   High-density executive dashboard
+                              ├── .engine/Tables/*.Rmd      Aggregates & failure tables
+                              ├── .engine/Charts/*.Rmd      Responsive SVG & Plotly charts
+                              ├── .engine/Utilities/*.R     Metrics, SLA, & hybrid AI helpers
+                              └── .engine/Styles/*          CSS (light/dark themes, modals)
                                         │
                                         ▼
                               <output_dir>/Performance_Report_<runs>_<timestamp>.html
@@ -62,7 +65,7 @@ Two distinct phases:
 | Phase | What it does | Repeatable? |
 |---|---|---|
 | **Register** | Reads every CSV in a folder, normalises columns per tool, appends rows to the DuckDB vault under one **Run ID** | Once per Run ID (duplicates are rejected) |
-| **Report** | Reads 1–3 registered runs back out of the vault and renders the HTML dashboard | As often as you like |
+| **Report** | Reads 1–2 registered runs back out of the vault (Current and optional Base) and renders the HTML dashboard | As often as you like |
 
 Data is **only** read from the vault at report time — the original CSVs are not needed again
 once registered.
@@ -104,7 +107,7 @@ but pin 4.6.0 if you want an environment identical to the reference one.
      "Path", $env:Path + ";C:\Program Files\R\R-4.6.0\bin\x64", "User")
    ```
 
-**Rtools is not required.** `worker.R` installs packages with `type = "binary"` from
+**Rtools is not required.** `engine.R` installs packages with `type = "binary"` from
 `cran.rstudio.com`, so nothing is compiled from source on Windows.
 
 ### macOS
@@ -193,7 +196,7 @@ If `pandoc --version` works in the shell but R cannot find it, point R at the fo
 setx RSTUDIO_PANDOC "C:\Program Files\Pandoc"
 ```
 
-`worker.R` also honours a **portable copy** at `RLibs/tools/pandoc/` — drop the extracted
+`engine.R` also honours a **portable copy** at `RLibs/tools/pandoc/` — drop the extracted
 pandoc binaries there and the engine uses them automatically without touching system `PATH`.
 This is the recommended trick on locked-down machines where you cannot install software.
 
@@ -210,23 +213,25 @@ Then open `config.yaml` and set `database_path` and `output_dir` — the shipped
 UNC placeholders (`//<host>/shared/Performance-JMeter/...`). Use your real file server, or the
 local defaults `Data/Performance_Vault.db` and `Reports` (see §6).
 
-**Windows:** right-click `frontdoor.ps1` → *Run with PowerShell*, or from a PowerShell prompt
+**Windows:** right-click `launch.ps1` → *Run with PowerShell*, or from a PowerShell prompt
 opened in the project root:
 
 ```powershell
 cd C:\Tools\aper-delta
-powershell -ExecutionPolicy Bypass -File .\frontdoor.ps1
+powershell -ExecutionPolicy Bypass -File .\launch.ps1
 ```
+*(Note: `frontdoor.ps1` is retained as a backwards-compatible alias.)*
 
 **Linux/macOS:**
 
 ```bash
-chmod +x frontdoor.sh      # first time only
-./frontdoor.sh
+chmod +x launch.sh      # first time only
+./launch.sh
 ```
+*(Note: `frontdoor.sh` is retained as a backwards-compatible alias.)*
 
-> ⚠️ **Always launch from the project root.** `worker.R` reads `config.yaml` from the *current
-> working directory*, so running `Rscript .engine/worker.R` from elsewhere fails with
+> ⚠️ **Always launch from the project root.** `engine.R` reads `config.yaml` from the *current
+> working directory*, so running `Rscript .engine/engine.R` from elsewhere fails with
 > `cannot open file 'config.yaml'`.
 
 ### First-run package bootstrap
@@ -250,20 +255,23 @@ pre-populated `RLibs/` folder from a machine that already worked.
 
 ```
 aper-delta/
-├── frontdoor.ps1                 # Windows interactive launcher
-├── frontdoor.sh                  # Linux/macOS interactive launcher
-├── config.yaml                   # Main configuration (charts, paths, column mappings)
+├── launch.ps1                    # Primary Windows interactive launcher (frontdoor.ps1 alias)
+├── launch.sh                     # Primary Linux/macOS interactive launcher (frontdoor.sh alias)
+├── config.yaml                   # Main configuration (version, paths, SLA, exclusions, AI)
 ├── secrets.yaml                  # (you create this) Amplify API token — git-ignored
 ├── aper-delta.Rproj              # RStudio project; also the `here::here()` root anchor
+├── Evidence/                     # (optional) Drop-zone for manual infra screenshots (<run_id>/*.png)
 ├── .engine/
-│   ├── worker.R                  # CLI dispatcher & package bootstrapper
-│   ├── storyteller.Rmd           # Master Flexdashboard template (3 tabs)
-│   ├── Dashboard/                # dash-testSummary, dash-metrics, dash-rt-sla, dash-aiSummary…
-│   ├── Tables/                   # tab-aggregates, tab-slowest, tab-errors
-│   ├── Charts/                   # one .Rmd per chart
-│   ├── Utilities/                # utils.R (theme/palette/observations), dashboard.R, rtBreakdown.R…
-│   └── Styles/                   # styles.css, Planit icons
-├── SLA/performance-sla.yaml      # SLA thresholds
+│   ├── engine.R                  # Primary CLI dispatcher, Quarto/Rmd orchestrator (worker.R alias)
+│   ├── dashboard.Rmd             # Master Flexdashboard / Quarto template (storyteller.Rmd alias)
+│   ├── dashboard.qmd             # Master Quarto engine template (storyteller.qmd alias)
+│   ├── Dashboard/
+│   │   └── dash-executive-summary.Rmd # High-density single-viewport dashboard & interactive modals
+│   ├── Tables/                   # DT tables (aggregates, slowest, errors)
+│   ├── Charts/                   # High-density SVG & Plotly chart templates
+│   ├── Utilities/                # utils.R, dashboard.R, metrics & SLA calculation helpers
+│   └── Styles/                   # styles.css (viewport layout, light/dark themes, modal styling)
+├── SLA/performance-sla.yaml      # SLA thresholds & response time targets
 ├── RLibs/                        # Local isolated R package cache (git-ignored)
 ├── Data/Performance_Vault.db     # Default local DuckDB vault (git-ignored; may point elsewhere)
 ├── RawResults/                   # Suggested drop-zone for input CSVs (git-ignored)
@@ -282,14 +290,16 @@ path from the root.
 | Key | Purpose | Notes |
 |---|---|---|
 | `params.project` | Report title project name | Leave `""` to auto-detect from the CSV filename / vault |
-| `rmd_template` | Path to the master template | **Do not change** |
+| `params.version` | Report version displayed in navbar | e.g. `"v2.0"`, `"1.0.1"` |
+| `rmd_template` | Path to the master template | **Do not change** (`.engine/storyteller.Rmd`) |
 | `output_dir` | Where HTML reports go | Relative, absolute or UNC — see “Shared / network locations” below |
 | `database_path` | DuckDB vault file | Relative, absolute or UNC — see “Shared / network locations” below |
-| `sla_file_path` | SLA definitions | Blank or missing file ⇒ SLA evaluation skipped silently |
-| `ai_summary_enabled` | `"true"` / `"false"` | Requires `secrets.yaml` (see §14) |
-| `ai_url`, `ai_model_id` | Amplify completion endpoint & model | Change only if IT gives you a new endpoint |
-| `charts.*` | Per-chart on/off switches | See §13 |
-| `tool_type` | Default engine | System default — the launcher overrides it per run |
+| `sla_file_path` | SLA definitions | Default `"SLA/performance-sla.yaml"`. Missing ⇒ SLA evaluation skipped |
+| `evidence_dir` | Manual CPU/Memory screenshot directory | Optional folder (e.g. `Evidence/100002/*.png`) surfaced in Infrastructure modal |
+| `ai_summary_enabled` | `"true"` / `"false"` | Toggles Amplify AI generation (with automatic deterministic fallback) |
+| `ai_url`, `ai_model_id` | Amplify completion endpoint & model | Change only if your team uses a custom model/endpoint |
+| `label_exclusions` | List of labels excluded globally | Pacing samplers, think time, or debug samplers excluded before analysis |
+| `tool_type` | Default engine | System default (`jmeter` / `neoload`) — launcher overrides it per run |
 | `tool_mappings.jmeter` / `.neoload` | Source-CSV column → internal field mapping | Edit **only** if your export uses different headers |
 | `bin_size` | Time-bucket size in seconds for per-minute charts | Default `60` |
 | `user_action_filter` | Regex of transactions to include | Default `.*` (all) |
@@ -430,8 +440,9 @@ Successful output looks like:
    [#2] Run ID: 123455 | Project: ProjectXYZ | Test: Sanity | Registered: 2026-08-02 09:12:44
    ```
 
-4. Enter **up to 3** runs, one per line — either the **Run ID** (`123456`) or the
-   **Sequence #** (`3`). Press Enter on an empty line to finish (at least one is required).
+4. Enter the two run inputs — either the **Run ID** (e.g. `123456`) or the **Sequence #** (e.g. `3`):
+   - **1. Current Run ID / Sequence # (Required):** The active performance test run under evaluation.
+   - **2. Baseline Run ID / Sequence # (Optional):** The reference benchmark run to compare against. Press Enter to generate a standalone single-run report.
 5. Optionally enter a **transaction label filter** — one or more comma-separated keywords.
    Each keyword is a *contains* match (case-sensitive, not a regex) and the keywords are
    OR-ed together, so `Login, Checkout` keeps every transaction whose label contains either
@@ -459,18 +470,18 @@ Handy for CI pipelines. Run these **from the project root**.
 
 ```bash
 # List recent runs (what the menu prints)
-Rscript .engine/worker.R --opMode=menu --active_tool=jmeter
+Rscript .engine/engine.R --opMode=menu --active_tool=jmeter
 
 # Register a folder of CSVs
-Rscript .engine/worker.R --opMode=register \
+Rscript .engine/engine.R --opMode=register \
         --rawResultsFolder="/full/path/to/build-042" --active_tool=jmeter
 
-# Compare two runs, filtering to transactions containing "TRX" or "TRN"
-Rscript .engine/worker.R --opMode=report \
-        --comp1=1 --comp2=2 --active_tool=jmeter --labelFilterParam="TRX, TRN"
+# Compare Current run vs Baseline run, filtering to transactions containing "TRX"
+Rscript .engine/engine.R --opMode=report \
+        --current=2 --base=1 --active_tool=jmeter --labelFilterParam="TRX"
 
-# Single-run report into a custom output folder
-Rscript .engine/worker.R --opMode=report --comp1=123456 \
+# Standalone single-run report into a custom output folder
+Rscript .engine/engine.R --opMode=report --current=123456 \
         --active_tool=neoload --outputFolder="/mnt/share/perf-reports"
 ```
 
@@ -478,16 +489,18 @@ Rscript .engine/worker.R --opMode=report --comp1=123456 \
 |---|---|---|
 | `--opMode` | `report` | `menu`, `register` or `report` |
 | `--rawResultsFolder` | `NONE` | Folder of CSVs (register mode) |
-| `--comp1` / `--comp2` / `--comp3` | `NONE` | Run ID **or** sequence number to include |
+| `--current` | `NONE` | Current candidate Run ID or sequence number (Required for report mode) |
+| `--base` (or `--baseline`) | `NONE` | Baseline benchmark Run ID or sequence number (Optional for standalone) |
+| `--comp1` / `--comp2` | `NONE` | Legacy aliases: `--comp1` (base) and `--comp2` (current) |
 | `--active_tool` | `jmeter` | `jmeter` or `neoload` (selects the vault table) |
 | `--outputFolder` | `NONE` → `output_dir` from `config.yaml` → `Reports/` | Output directory; local, absolute or UNC, created if missing |
 | `--labelFilterParam` | `NONE` | Comma-separated contains-match keywords, OR-ed together |
 
-Windows equivalents use the same flags:
+Windows equivalents use the same flags (`engine.R` or `worker.R` wrapper):
 
 ```powershell
-& "C:\Program Files\R\R-4.6.0\bin\x64\Rscript.exe" --vanilla .engine\worker.R `
-  "--opMode=report" "--comp1=1" "--comp2=2" "--active_tool=jmeter" "--labelFilterParam=NONE"
+& "C:\Program Files\R\R-4.6.0\bin\x64\Rscript.exe" --vanilla .engine\engine.R `
+  "--opMode=report" "--current=2" "--base=1" "--active_tool=jmeter" "--labelFilterParam=NONE"
 ```
 
 Exit codes: `0` on success, `1` when registration is rejected (no CSVs found, duplicate Run ID).
@@ -495,50 +508,71 @@ Fatal validation problems (bad filename, missing folder, unknown run) raise an R
 
 ---
 
+---
+
 ## 11. Reading the report
 
-The dashboard has three tabs.
+APER Delta v2.0 renders a **single-viewport (100vh) High-Density Executive Performance Dashboard** designed for executive briefings, engineering triage, and release sign-off. Everything is visible at a glance without page scrolling, backed by instant zero-lag modal drilldowns.
 
-### Dashboard
-- **Test Information** — project, Run ID, start/end time and duration per run; the highest
-  sequence number is flagged as the **current** run.
-- **Performance Metrics** — virtual users (distinct `user_index`), total transactions,
-  throughput (transactions ÷ elapsed wall-clock seconds), pass/fail counts, error rate %.
-  With an SLA file present, boxes turn **green** on pass and **red** on fail.
-- **Response Time SLA** — count of transactions breaching their p90/p95 threshold plus the
-  top 3 worst offenders. Shows `N/A` when no `response_time_sla` block is defined.
-- **AI Performance Summary** — plain-English narrative of the run(s), weighted to the most
-  recent run (see §14).
+```
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│ ⚡ Report Title Navbar (Project, Scenario, v2.0 Badge, Date, Theme Toggle: ☀️/🌙)      │
+├────────────────────────────────────────────────────────────────────────────────────────┤
+│ 1. Consolidated Status Bar: [✅ PASS / ❌ FAIL] | Run #100002 vs #100001 | Meta Info   │
+├────────────────────────────────────────┬───────────────────────────────────────────────┤
+│ ⚡ Executive Summary & Assessment       │ 2x2 Metric KPI Strip                          │
+│ ├── Narrative (2 Paragraphs)           │ ├── Max Virtual Users  ├── Apps Passed TPS    │
+│ └── 📋 Next Steps (3 Action Items)     │ ├── Scenarios Met RT   ├── Passed Error SLA   │
+├────────────────────────────────────────┴───────────────────────────────────────────────┤
+│ 2. 🏥 Application Health & Baseline Matrix (Requests, TPS, RT, Error %, SLA vs Base)   │
+├────────────────────────────────────────┬───────────────────────────────────────────────┤
+│ 3. 🧭 Scenario Breakdown (App Filter)  │ 4. 🔥 Top Response Time Breaches (Micro-bars) │
+├────────────────────────────────────────┼───────────────────────────────────────────────┤
+│ 5. ⚠️ Top Error Contributors (Pareto)  │ 6. ⚖️ Current vs Baseline Comparison Scorecard │
+└────────────────────────────────────────┴───────────────────────────────────────────────┘
+```
 
-> SLA evaluation covers **client-side** metrics only (response time, error rate, throughput,
-> virtual users). Server-side CPU/memory are not captured.
+### Zone 1: Executive Assessment & 2x2 KPI Strip
+- **Consolidated Top Status Bar** — Overall PASS/FAIL release gate verdict, Run IDs, start/end timestamps, test duration, peak concurrency, and optional `🖥 Infrastructure 🔍` button.
+- **Executive Summary Callout (2-Column)**:
+  - **Left (Narrative Synthesis)**: Paragraph 1 covers workload profile (duration, ramp-up, steady state, max concurrent users, throughput, error rate, and baseline P95 latency improvement/regression). Paragraph 2 details SLA release criteria compliance, breach counts, worst-performing transaction vs SLA threshold, and impacted flow clusters.
+  - **Right (📋 Next Steps)**: Dedicated action plan box with 3 targeted performance engineering recommendations (steady-state scoping validation, APM/server log triage for top bottlenecks, and re-test verification).
+- **2x2 KPI Strip**:
+  - `Max Virtual Users`: achieved concurrency vs target threshold.
+  - `Apps Passed TPS SLA`: application count passing throughput gate with aggregate TPS.
+  - `Scenarios Met RT SLA`: scenario count passing transaction-level response time criteria with current P95 ms.
+  - `Scenarios Passed Error SLA`: scenarios compliant with error rate criteria.
 
-### Tables
-- **Aggregates — Side by Side** — per transaction, per run: min / avg / p90 / p95 / max ms,
-  total, pass and fail counts, average received bytes.
-- **Slowest Transactions** — the 1000 slowest samples per run per app.
-- **Error Transactions** — every failed sample; response code for JMeter, `N/A` for NeoLoad.
+### Zone 2: Application Health & Baseline Matrix
+- Comprehensive multi-app scorecard comparing Current vs Baseline for Total Requests, Average Throughput, P95/P90 Response Time, Error Rate %, and Scenarios Met RT SLA.
+- Inline delta badges (`▲` / `▼`) highlight performance trends; clicking `SLA Status 🔍` or `Scenarios Met RT SLA 🔍` opens instant modal deep-dives.
 
-All tables have per-column filters (dropdown multi-select or free-text).
+### Zone 3: Failure Analysis Grids
+- **Scenario Breakdown**:
+  - Per-scenario health table with interactive **App Filter Pills** (`All`, `App1`, `App2`) for multi-application runs.
+  - Shows requests, throughput, scenario P95, transaction SLA compliance (`X of Y`), and error rate.
+  - *Note:* In accordance with performance testing standards, SLA pass/fail status is rigorously evaluated against transaction-level thresholds, decoupling aggregate scenario P95 values from false SLA failures.
+- **Top Response Time Breaches**:
+  - Ranked list of the worst-performing transactions vs threshold with inline severity micro-bars, actual response time, SLA threshold, and % breach. Clicking any row opens the transaction drilldown modal.
 
-### Charts
-Plotly charts, each toggleable in `config.yaml`:
+### Zone 4: Error Pareto & Baseline Scorecard
+- **Top Error Contributors**: Lists the highest error-producing transactions with error counts and proportional share micro-bars.
+- **Current vs Baseline Comparison**: Metric-by-metric scorecard comparing Max Users, Aggregate Throughput, Error Rate %, P95 Response Time, TPS Pass Rate, Error SLA Pass Rate, and RT SLA Pass Rate.
 
-| Tab | Chart key |
-|---|---|
-| Overall Throughput (TPM) | `tpmVerticalStack` |
-| Response Time Scatter | `rawScatterWebGL` |
-| Virtual Users (Load) | `vUsersPerMinute` |
-| Throughput by App | `tpmVerticalStackByCsvFilename` |
-| Throughput vs Response Time | `throughputVsRT` |
-| Response Time vs Load | `rtVsUserLoad` |
-| Average Response Times | `avgRtBreakdown` |
-| 90th Percentile RT | `pct90RtBreakdown` |
-| Avg RT by Transaction | `groupedAvgRT` |
-| 90th Percentile RT by Transaction | `groupedPercentiles` |
-| Transaction Volume | `txCountBreakdown` |
-| Error Rate | `errorsPerMinute` |
-| RT Scatter by App | `rawScatterWebGLByCsvFilename` |
+### Interactive Zero-Lag Modals
+Clicking any search icon (`🔍`) or navigation badge opens a responsive dialog without page reload:
+1. **Executive Charts Modal (`📈 Executive Charts 🔍` / `📈 Compare vs Base` / `⭐ Apdex Experience`)**: Lightweight pure-SVG multi-view performance visualizer with application filter pills:
+   - **Executive 2x2 Grid**: 4 key performance cards (Response Time Timeline, Throughput Profile with VU Backdrop, Apdex User Experience & Performance Index, and Error Spike Timeline & Top 5 Pareto Share).
+   - **Latency & Load Timelines**: Minute-by-minute response time and throughput vs baseline.
+   - **Apdex User Experience & Performance Index**: Industry-standard Apdex rating (0.00 to 1.00) measuring user satisfaction evaluated against per-transaction target thresholds ($T$). Features horizontal stacked experience zones (🟢 Satisfied $\le T$, 🟡 Tolerating $T-4T$, 🔴 Frustrated $>4T$ or Error), Apdex score badge with standard rating (`Excellent`, `Good`, `Fair`, `Poor`, `Unacceptable`), run-over-run comparison, and an educational explainer box directly on the card with instant links to the Glossary modal. File uploads/downloads and custom endpoints are evaluated against their own specific SLA targets without false penalties.
+   - **Scenario vs Baseline**: Transaction-stacked horizontal duration bars with drill-down to individual transactions.
+   - **Error Timeline & Pareto**: Errors/min spikes and cumulative Pareto share distribution.
+2. **SLA Evaluation Modal**: Detailed rule-by-rule audit for all run-level and application thresholds.
+3. **Scenario Health Details Modal**: Deep breakdown per scenario and transaction flow.
+4. **Transaction RT Breakdown Modal**: Complete transaction-level table with search, sorting, and delta vs baseline.
+5. **HTTP Error Breakdown Modal**: Response code distribution and error payload messages.
+6. **Infrastructure Evidence Modal**: Displays manual CPU, memory, and disk screenshots placed in `Evidence/<run_id>/`.
+7. **Glossary & Methodology Modal**: Clear definitions of percentile calculations, formulas, and evaluation rules.
 
 ---
 
@@ -588,7 +622,7 @@ response_time_sla:
 ```
 
 A transaction fails when `actual > threshold × (1 + tolerance_pct/100)`. Breaches are ranked by
-`breach_pct` and the worst three are surfaced on the dashboard. Only list exceptions —
+`breach_pct` and surfaced in the Top Breaches card. Only list exceptions —
 everything else inherits `default_threshold`.
 
 ---
@@ -598,36 +632,59 @@ everything else inherits `default_threshold`.
 ```yaml
 charts:
   tpmVerticalStack: true
-  rawScatterWebGL: false     # hides the tab entirely
+  rawScatterWebGL: false     # hides heavy charts if needed
 ```
 
-Any key omitted from the block defaults to **shown**. Use the keys from the table in §11.
-Turning off heavy charts (`rawScatterWebGL*`, `groupedPercentiles`) is the quickest way to cut
-render time and HTML size on very large datasets.
+Any key omitted from the block defaults to **shown**. Turning off heavy scatter charts is the quickest way to cut render time and HTML size on very large datasets.
 
 ---
 
-## 14. AI summary setup
+## 14. AI Summary & Hybrid Architecture
 
-1. Create `secrets.yaml` in the project root — it is git-ignored, never commit or share it:
+APER Delta v2.0 features a **Hybrid Executive Summary Architecture** combining generative AI with a 100% reliable deterministic fallback engine:
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                        Hybrid Generation Flow                          │
+├────────────────────────────────────────────────────────────────────────┤
+│ 1. Check config.yaml (ai_summary_enabled) & secrets.yaml (token)       │
+│                                                                        │
+│ ┌───────────────────────────┐         ┌──────────────────────────────┐ │
+│ │  Amplify AI LLM Engine    │         │  Deterministic Rule Engine   │ │
+│ │  (REST API Completion)    │         │  (Native R Script in-memory) │ │
+│ ├───────────────────────────┤         ├──────────────────────────────┤ │
+│ │ • Context-rich prompt     │─(Fail)─>│ • 100% offline & instant     │ │
+│ │ • Few-shot style guide    │         │ • Zero token / API dependency│ │
+│ │ • Dynamic Next Steps      │         │ • Exact same metrics & logic │ │
+│ └─────────────┬─────────────┘         └──────────────┬───────────────┘ │
+│               └───────────────────────┬──────────────┘                 │
+│                                       ▼                                │
+│                Rich Executive Narrative + Next Steps                   │
+│                                       │                                │
+│                   Rendered in Executive Dashboard                      │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+### Setup & Activation
+1. Create `secrets.yaml` in the project root (git-ignored, never commit it):
 
    ```yaml
-   amplify_token: "your-token-here"
+   amplify_token: "your-amplify-token-here"
    ```
 
-2. Ensure `ai_summary_enabled: "true"` in `config.yaml`, and that `ai_url` / `ai_model_id`
-   point at your Amplify endpoint.
+2. Set `ai_summary_enabled: "true"` in `config.yaml`.
+3. The engine sends aggregated run metrics (users, throughput, error rate, baseline delta %, SLA breaches, top failing endpoints) to the completion endpoint (`ai_url` / `ai_model_id`).
 
-Behaviour when something is missing:
+### Automatic Deterministic Fallback
+If any of the following occur:
+- `secrets.yaml` is missing or the token has expired/unauthorized
+- The machine is offline or behind a firewall blocking the API endpoint
+- `ai_summary_enabled` is set to `"false"`
+- The API call times out or returns an error
 
-| Situation | Result |
-|---|---|
-| `ai_summary_enabled: "false"` | Panel hidden entirely; report renders normally |
-| `secrets.yaml` missing / empty token | Panel shows “⚠ AI Summary unavailable: api_key not found.” |
-| Endpoint unreachable | Panel shows the error; the rest of the report is unaffected |
-
-The prompt is built from aggregated per-run metrics only (run ID, duration, users, transaction
-counts, throughput, error rate) — raw request data is never sent.
+**The engine immediately and seamlessly falls back to the internal deterministic generator.**
+- It computes and synthesizes the identical structured two-paragraph executive narrative and three tailored Next Steps directly from DuckDB metrics in memory.
+- **Guarantee:** Reports **never break, never hang, and never display empty or missing summary boxes**.
 
 ---
 
@@ -688,7 +745,7 @@ Notes:
 | Response Time SLA shows `N/A` | No `response_time_sla` block, or no SLA file configured |
 | First run hangs for many minutes | Package bootstrap into `RLibs/` — normal once; check proxy settings if it never finishes |
 | `Could not set lock on file … Performance_Vault.db` | Another R session/RStudio holds the vault open — close it and retry |
-| PowerShell refuses to run the script | `powershell -ExecutionPolicy Bypass -File .\frontdoor.ps1` |
+| PowerShell refuses to run the script | `powershell -ExecutionPolicy Bypass -File .\launch.ps1` |
 
 ---
 
@@ -696,17 +753,21 @@ Notes:
 
 | Task | How |
 |---|---|
-| Install prerequisites | R 4.6.0 (§2) + latest Pandoc (§3) |
-| Start the tool | `frontdoor.ps1` (Windows) / `./frontdoor.sh` (Linux/macOS), from the project root |
+| Install prerequisites | R 4.6.0 (§2) + latest Pandoc (§3) / Quarto CLI |
+| Start the tool | `launch.ps1` (Windows) / `./launch.sh` (Linux/macOS), from the project root |
 | Register results | Menu → **2** → tool type → full folder path |
-| Generate a report | Menu → **1** (or Enter) → tool type → Run IDs / Sequence #s → optional filter |
-| Compare runs | Enter up to 3 identifiers, one per line |
+| Generate a report | Menu → **1** (or Enter) → tool type → Current Run ID & Baseline Run ID → optional filter |
+| Compare runs | Pass `--current=<run>` and `--base=<run>` (or enter both at interactive prompt) |
 | Filter transactions | Type one or more comma-separated substrings at the filter prompt (`Login, Checkout`) |
+| Filter by application | Click application pill buttons (`All`, `App1`, `App2`) in Scenario Breakdown or Charts Modal |
+| Add infrastructure screenshots | Drop `.png` files into `Evidence/<run_id>/` (opens via `🖥 Infrastructure 🔍`) |
+| Switch report theme | Click the ☀️ / 🌙 theme toggle in the top-right navbar |
+| Set report version | Update `params.version` in `config.yaml` (e.g. `v2.0`) |
+| Set SLA thresholds | `SLA/performance-sla.yaml` |
+| Exclude labels globally | Add label names under `label_exclusions` in `config.yaml` |
+| AI Executive Summary | `ai_summary_enabled: "true"` + `secrets.yaml` (automatically falls back if offline/expired) |
 | Find the output | `<output_dir>/Performance_Report_<runs>_<timestamp>.html` (`Reports/` by default) |
 | Use a shared vault / report folder | Point `database_path` and `output_dir` at a UNC or absolute path (§6) |
-| Hide a chart | `charts.<key>: false` in `config.yaml` |
-| Set SLA thresholds | `SLA/performance-sla.yaml` |
-| Toggle AI summary | `ai_summary_enabled` in `config.yaml` + `secrets.yaml` token |
 | Inspect the vault | `Rscript check_db_head.R` |
 | Delete a run | Edit and run `delete_by_runid.R` |
 | Reset everything | Delete `Data/Performance_Vault.db` |
