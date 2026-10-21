@@ -1612,6 +1612,7 @@ body.dark-theme .hd-assessment-callout.fail,
 #hd-theme-toggle-state:checked ~ .hd-viewport .hd-assessment-callout.fail {
   background: #231B24 !important;
   border-left-color: #EF4444 !important;
+  border-color: #4C1D24 !important;
 }
 
 body.dark-theme .hd-status-title,
@@ -1661,10 +1662,46 @@ body.dark-theme .hd-chart-legend,
 body.dark-theme .hd-assessment-text,
 body.dark-theme .hd-summary-narrative,
 body.dark-theme .hd-summary-grid-2x2,
+body.dark-theme .hd-summary-p,
 #hd-theme-toggle-state:checked ~ .hd-viewport .hd-assessment-text,
 #hd-theme-toggle-state:checked ~ .hd-viewport .hd-summary-narrative,
-#hd-theme-toggle-state:checked ~ .hd-viewport .hd-summary-grid-2x2 {
+#hd-theme-toggle-state:checked ~ .hd-viewport .hd-summary-grid-2x2,
+#hd-theme-toggle-state:checked ~ .hd-viewport .hd-summary-p {
+  color: #CBD5E1 !important;
+}
+
+body.dark-theme .hd-summary-p strong,
+#hd-theme-toggle-state:checked ~ .hd-viewport .hd-summary-p strong {
+  color: #F8FAFC !important;
+}
+
+body.dark-theme .hd-summary-nextsteps-col,
+#hd-theme-toggle-state:checked ~ .hd-viewport .hd-summary-nextsteps-col {
+  background: #0F172A !important;
+  border-color: #334155 !important;
+  border-left-color: #3B82F6 !important;
+}
+
+body.dark-theme .hd-assessment-callout.fail .hd-summary-nextsteps-col,
+#hd-theme-toggle-state:checked ~ .hd-viewport .hd-assessment-callout.fail .hd-summary-nextsteps-col {
+  background: #1A131C !important;
+  border-color: #4C1D24 !important;
+  border-left-color: #EF4444 !important;
+}
+
+body.dark-theme .hd-nextsteps-title,
+#hd-theme-toggle-state:checked ~ .hd-viewport .hd-nextsteps-title {
   color: #E2E8F0 !important;
+}
+
+body.dark-theme .hd-nextsteps-list,
+#hd-theme-toggle-state:checked ~ .hd-viewport .hd-nextsteps-list {
+  color: #CBD5E1 !important;
+}
+
+body.dark-theme .hd-nextsteps-list strong,
+#hd-theme-toggle-state:checked ~ .hd-viewport .hd-nextsteps-list strong {
+  color: #F8FAFC !important;
 }
 
 body.dark-theme .hd-summary-narrative,
