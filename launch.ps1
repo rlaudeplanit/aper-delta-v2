@@ -2,9 +2,6 @@
 # launch.ps1 - APER Delta Interactive Launcher (Windows)
 ###################################################
 $RScript = Join-Path $PSScriptRoot ".engine\engine.R"
-if (!(Test-Path $RScript)) {
-  $RScript = Join-Path $PSScriptRoot ".engine\worker.R"
-}
 
 # ── Dynamically find Rscript — picks the latest installed R version automatically ──
 $RBase = "C:\Program Files\R"

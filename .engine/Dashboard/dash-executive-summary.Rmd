@@ -372,9 +372,6 @@ report_navbar_html <- sprintf(
        <span class="hd-report-navbar-title">%s</span>
        %s
        <span class="hd-navbar-status">%s OVERALL STATUS: %s</span>
-       <span class="hd-report-navbar-tab">📊 Executive Report</span>
-       <label for="hd-mode-slarules" class="hd-report-navbar-tab" data-open-mode="slarules" data-open-tab="ALL" style="cursor:pointer; border:1px solid rgba(255,255,255,0.22); background:#1F2937; margin:0;">⚖️ SLA Criteria</label>
-       <label for="hd-mode-glossary" class="hd-report-navbar-tab" data-open-mode="glossary" data-open-tab="ALL" style="cursor:pointer; border:1px solid rgba(255,255,255,0.22); background:#1F2937; margin:0;">📖 Performance Glossary</label>
      </div>
      <div class="hd-report-navbar-right">
        <span>Scenario: <strong style="color:#FFFFFF;">%s</strong> &nbsp;|&nbsp; Runs: <strong style="color:#FFFFFF;">#%s vs #%s</strong> &nbsp;|&nbsp; Date: <strong style="color:#FFFFFF;">%s</strong></span>
@@ -391,6 +388,10 @@ report_navbar_html <- sprintf(
   baseline_run_id,
   report_date_fmt
 )
+
+evidence_btn_html <- if (has_evidence) {
+  '<label for="hd-mode-evidence" class="hd-modal-btn" data-open-mode="evidence" data-open-tab="ALL" style="background:#F0FDF4;border-color:#86EFAC;color:#166534;padding:3px 10px;margin:0;white-space:nowrap;flex-shrink:0;">🖥 Infrastructure 🔍</label>'
+} else ""
 
 top_bar_html <- sprintf(
   '<div class="%s">
@@ -413,11 +414,13 @@ top_bar_html <- sprintf(
        <div style="margin-left:auto; display:flex; align-items:center; gap:6px; flex-shrink:0; white-space:nowrap;">
          <label for="hd-mode-charts" class="hd-modal-btn" data-open-mode="charts" data-open-tab="GRID" style="background:#EFF6FF;border-color:#93C5FD;color:#1D4ED8;padding:3px 10px;margin:0;white-space:nowrap;flex-shrink:0;">📈 Executive Charts 🔍</label>
          <label for="hd-mode-slarules" class="hd-modal-btn" data-open-mode="slarules" data-open-tab="ALL" style="background:#FDF2F8;border-color:#FBCFE8;color:#9D174D;padding:3px 10px;margin:0;white-space:nowrap;flex-shrink:0;">⚖️ SLA Criteria 🔍</label>
-         <label for="hd-theme-toggle-state" id="hd-theme-toggle-btn" class="hd-theme-toggle-btn" title="Switch between Light and Dark theme" style="margin:0;flex-shrink:0;"><span class="hd-theme-label-dark">🌙 Dark</span><span class="hd-theme-label-light">☀️ Light</span></label>
+         <label for="hd-mode-glossary" class="hd-modal-btn" data-open-mode="glossary" data-open-tab="ALL" style="background:#F0FDF4;border-color:#BBF7D0;color:#166534;padding:3px 10px;margin:0;white-space:nowrap;flex-shrink:0;">📖 Performance Glossary 🔍</label>
+         %s
        </div>
      </div>
      <div class="hd-topbar-apps-row">
        <span class="hd-meta-item">🖥 <strong>Applications:</strong> %s</span>
+       <label for="hd-theme-toggle-state" id="hd-theme-toggle-btn" class="hd-theme-toggle-btn" title="Switch between Light and Dark theme" style="margin-left:auto;flex-shrink:0;"><span class="hd-theme-label-dark">🌙 Dark</span><span class="hd-theme-label-light">☀️ Light</span></label>
      </div>
    </div>',
   topbar_class,
@@ -431,14 +434,9 @@ top_bar_html <- sprintf(
   baseline_duration,
   baseline_start_fmt,
   baseline_end_fmt,
+  evidence_btn_html,
   application_list
 )
-
-if (has_evidence) {
-  evidence_btn_html <- '<label for="hd-mode-evidence" class="hd-modal-btn" data-open-mode="evidence" data-open-tab="ALL" style="background:#F0FDF4;border-color:#86EFAC;color:#166534;padding:3px 10px;margin:0;white-space:nowrap;flex-shrink:0;">🖥 Infrastructure 🔍</label>'
-  theme_marker <- '<label for="hd-theme-toggle-state"'
-  top_bar_html <- sub(theme_marker, paste0(evidence_btn_html, theme_marker), top_bar_html, fixed = TRUE)
-}
 
 # Run-over-run latency delta used by the executive narrative
 rt_delta_pct <- if (has_baseline && baseline_run$pct_rt[1] > 0) {

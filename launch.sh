@@ -7,9 +7,6 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENGINE_DIR="$SCRIPT_DIR/.engine"
 RSCRIPT_PATH="$ENGINE_DIR/engine.R"
-if [ ! -f "$RSCRIPT_PATH" ]; then
-  RSCRIPT_PATH="$ENGINE_DIR/worker.R"
-fi
 
 # ── Check engine folder exists ──
 if [ ! -f "$RSCRIPT_PATH" ]; then

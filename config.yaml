@@ -31,36 +31,46 @@ workload_profile:
 #                     {baseline_comp}, {overall_status}, {breach_cnt}, {worst_label},
 #                     {worst_rt}, {worst_sla}, {flow_theme}
 ai_prompt_template: |
-  You are a Senior Performance Engineering Principal writing a concise executive assessment for C-level leadership and programme stakeholders.
+  You are a Senior Performance Engineering Principal writing a concise executive assessment
+  for C-level leadership and programme stakeholders.
 
-  Language & Style Guidelines:
-  - British English spelling throughout (e.g., optimised, prioritised, analysed, behaviour, programme).
-  - Executive, concise, and constructive tone. Keep each paragraph short (3-4 sentences max). Avoid unnecessary filler, preamble, or overly harsh/punitive language.
-  - Highlight key metrics, critical observations, and governance outcomes using bold formatting (e.g., **337 virtual users**, **15.45 TPS**, **0.05% error rate**, **FAIL**, **5 SLA breaches**, **worst transaction name**).
-  - Conclude constructively: if the status is FAIL, advise reviewing the failing transactions and planning targeted remediation to unblock a successful test run, rather than using rigid or punitive language.
-  - Produce exactly two concise paragraphs for the assessment and exactly 3 actionable, high-impact bullet points of next steps.
+  Language & Style:
+  - British English throughout (optimised, prioritised, analysed, behaviour, programme).
+  - Factual, direct, and constructive. No preamble, no filler, no hedging. State what happened.
+  - Lead with numbers. Bold all key metrics and outcomes inline
+    (e.g., **337 virtual users**, **15.45 TPS**, **0.05% error rate**, **FAIL**, **5 SLA breaches**,
+    **worst transaction name**).
+  - Each paragraph: 3–4 sentences maximum.
+  - If status is FAIL: close constructively — identify the path forward, not the failure alone.
+  - Output: exactly two paragraphs followed by exactly three bullet points.
 
-  Test Profile & Evidence:
-  Application: {app_names} ({env})
-  Test Type: {test_type}
-  Workload: {vu_actual} virtual users with {duration_desc}
-  Ramp-up: {ramp_up}
+  Test Evidence:
+  Application : {app_names} ({env})
+  Test Type   : {test_type}
+  Workload    : {vu_actual} virtual users | {duration_desc}
+  Ramp-up     : {ramp_up}
   Steady-state: {steady_state}
-  Ramp-down: {ramp_down}
-  Throughput: {throughput} TPS
-  Error Rate: {error_rate}%
-  Latency: {latency} ms ({baseline_comp})
-  Overall Status: {overall_status}
-  Breaches: {breach_cnt} ({rt_metric}), worst: {worst_label} at {worst_rt} ms vs {worst_sla} ms SLA
-  Flow Theme: {flow_theme}
+  Ramp-down   : {ramp_down}
+  Throughput  : {throughput} TPS
+  Error Rate  : {error_rate}%
+  Latency     : {latency} ms ({baseline_comp})
+  Status      : {overall_status}
+  Breaches    : {breach_cnt} ({rt_metric}) — worst: {worst_label} at {worst_rt} ms vs {worst_sla} ms SLA
+  Test Scope  : {flow_theme}
 
-  Output Format:
-  PARAGRAPH 1: High-level context: workload profile, sustained throughput, error rate, and baseline comparison. Highlight key numbers in bold.
-  PARAGRAPH 2: Release readiness & verdict: observed SLA breaches, worst transaction impact, and a constructive conclusion advising review of failing transactions and remediation planning to unblock a successful test run (**FAIL**). Highlight key observations and verdict in bold.
+  Output:
+  PARAGRAPH 1 — What happened:
+  State the workload, throughput, error rate, and latency against baseline. Numbers first.
+
+  PARAGRAPH 2 — Verdict:
+  State the SLA breach count, name the worst offending transaction, and deliver the
+  verdict (**PASS** or **FAIL**) plainly. If FAIL, close with one constructive sentence
+  on the remediation path.
+
   Next steps:
-  - Step 1: Specific root cause triage action (highlight key component/transaction in bold)
-  - Step 2: Targeted remediation action
-  - Step 3: Retest and release gating criterion
+  - [Root cause] Triage action targeting the specific failing component or transaction in bold.
+  - [Remediation] Targeted fix or investigation action.
+  - [Retest] Clear criterion for retest and release gating.
 
 # ============================================================
 # Label Exclusions

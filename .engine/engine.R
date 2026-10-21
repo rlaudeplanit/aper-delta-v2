@@ -526,18 +526,12 @@ if (opMode == "report") {
 
   cfg_template <- if (!is.null(params_cfg$rmd_template) && nzchar(trimws(params_cfg$rmd_template))) trimws(params_cfg$rmd_template) else NULL
 
-  qmd_candidate <- file.path(get_active_script_dir(), "dashboard.qmd")
-  if (!file.exists(qmd_candidate)) {
-    qmd_candidate <- file.path(get_active_script_dir(), "storyteller.qmd")
-  }
-  qmd_template <- qmd_candidate
+  qmd_template <- file.path(get_active_script_dir(), "dashboard.qmd")
 
   rmd_candidate <- if (!is.null(cfg_template) && file.exists(cfg_template)) {
     cfg_template
-  } else if (file.exists(file.path(get_active_script_dir(), "dashboard.Rmd"))) {
-    file.path(get_active_script_dir(), "dashboard.Rmd")
   } else {
-    file.path(get_active_script_dir(), "storyteller.Rmd")
+    file.path(get_active_script_dir(), "dashboard.Rmd")
   }
   rmd_template <- rmd_candidate
 
