@@ -373,6 +373,7 @@ report_navbar_html <- sprintf(
        %s
        <span class="hd-navbar-status">%s OVERALL STATUS: %s</span>
        <span class="hd-report-navbar-tab">📊 Executive Report</span>
+       <label for="hd-mode-slarules" class="hd-report-navbar-tab" data-open-mode="slarules" data-open-tab="ALL" style="cursor:pointer; border:1px solid rgba(255,255,255,0.22); background:#1F2937; margin:0;">⚖️ SLA Criteria</label>
        <label for="hd-mode-glossary" class="hd-report-navbar-tab" data-open-mode="glossary" data-open-tab="ALL" style="cursor:pointer; border:1px solid rgba(255,255,255,0.22); background:#1F2937; margin:0;">📖 Performance Glossary</label>
      </div>
      <div class="hd-report-navbar-right">
@@ -411,6 +412,7 @@ top_bar_html <- sprintf(
        </div>
        <div style="margin-left:auto; display:flex; align-items:center; gap:6px; flex-shrink:0; white-space:nowrap;">
          <label for="hd-mode-charts" class="hd-modal-btn" data-open-mode="charts" data-open-tab="GRID" style="background:#EFF6FF;border-color:#93C5FD;color:#1D4ED8;padding:3px 10px;margin:0;white-space:nowrap;flex-shrink:0;">📈 Executive Charts 🔍</label>
+         <label for="hd-mode-slarules" class="hd-modal-btn" data-open-mode="slarules" data-open-tab="ALL" style="background:#FDF2F8;border-color:#FBCFE8;color:#9D174D;padding:3px 10px;margin:0;white-space:nowrap;flex-shrink:0;">⚖️ SLA Criteria 🔍</label>
          <label for="hd-theme-toggle-state" id="hd-theme-toggle-btn" class="hd-theme-toggle-btn" title="Switch between Light and Dark theme" style="margin:0;flex-shrink:0;"><span class="hd-theme-label-dark">🌙 Dark</span><span class="hd-theme-label-light">☀️ Light</span></label>
        </div>
      </div>
@@ -472,17 +474,41 @@ test_type_str <- if (grepl("peak", tolower(current_run$test_name[1]))) {
   "A peak load performance test"
 }
 
+cfg <- tryCatch({
+  if (exists("params_cfg") && is.list(params_cfg) && length(params_cfg) > 0) {
+    params_cfg
+  } else if (file.exists(here::here("config.yaml"))) {
+    yaml::read_yaml(here::here("config.yaml"))
+  } else if (file.exists("config.yaml")) {
+    yaml::read_yaml("config.yaml")
+  } else if (file.exists("../config.yaml")) {
+    yaml::read_yaml("../config.yaml")
+  } else list()
+}, error = function(e) list())
+
 dur_mins <- as.numeric(current_run$duration_mins[1])
-duration_desc <- if (!is.na(dur_mins) && dur_mins >= 30) {
-  ramp_m <- min(10, max(5, round(dur_mins * 0.15)))
-  steady_m <- round(dur_mins - ramp_m)
-  sprintf("a %d-minute ramp-up (%ds) followed by %s steady state",
-          ramp_m, ramp_m * 60,
-          ifelse(steady_m == 60, "1 hour", sprintf("%d minutes", steady_m)))
-} else if (!is.na(dur_mins) && dur_mins > 0) {
-  sprintf("a %d-minute test profile", round(dur_mins))
+workload_cfg <- if (!is.null(cfg$workload_profile)) cfg$workload_profile else if (!is.null(cfg$workload)) cfg$workload else list()
+
+cfg_ramp_up   <- if (!is.null(workload_cfg$ramp_up)) trimws(as.character(workload_cfg$ramp_up)) else ""
+cfg_steady    <- if (!is.null(workload_cfg$steady_state)) trimws(as.character(workload_cfg$steady_state)) else ""
+cfg_ramp_down <- if (!is.null(workload_cfg$ramp_down)) trimws(as.character(workload_cfg$ramp_down)) else ""
+
+auto_ramp_m   <- if (!is.na(dur_mins) && dur_mins >= 30) min(10, max(5, round(dur_mins * 0.15))) else 10
+auto_steady_m <- if (!is.na(dur_mins) && dur_mins >= 30) round(dur_mins - auto_ramp_m) else 60
+
+val_ramp_up <- if (nzchar(cfg_ramp_up)) cfg_ramp_up else sprintf("%d-minute ramp-up (%ds)", auto_ramp_m, auto_ramp_m * 60)
+val_steady_state <- if (nzchar(cfg_steady)) cfg_steady else ifelse(auto_steady_m == 60, "1 hour steady state", sprintf("%d minutes steady state", auto_steady_m))
+val_ramp_down <- if (nzchar(cfg_ramp_down) && !tolower(cfg_ramp_down) %in% c("none", "0", "0m", "0s")) cfg_ramp_down else ""
+
+duration_desc <- if (nzchar(val_ramp_down)) {
+  sprintf("a %s followed by %s and a %s ramp-down",
+          sub("^a\\s+", "", val_ramp_up),
+          val_steady_state,
+          sub("^a\\s+|\\s*ramp-down$", "", val_ramp_down))
 } else {
-  "a 10-minute ramp-up (600s) followed by 1 hour steady state"
+  sprintf("a %s followed by %s",
+          sub("^a\\s+", "", val_ramp_up),
+          val_steady_state)
 }
 
 current_rt_fmt <- format(round(current_run$pct_rt[1]), big.mark = ",")
@@ -563,10 +589,10 @@ det_p2 <- if (isTRUE(overall_status)) {
   }
 }
 
-duration_retest_str <- if (!is.na(dur_mins) && dur_mins >= 30) {
-  sprintf("%ds ramp + %s steady", min(10, max(5, round(dur_mins * 0.15))) * 60, ifelse(round(dur_mins - min(10, max(5, round(dur_mins * 0.15)))) == 60, "1h", sprintf("%dm", round(dur_mins - min(10, max(5, round(dur_mins * 0.15)))))))
+duration_retest_str <- if (nzchar(val_ramp_down)) {
+  sprintf("%s + %s + %s", val_ramp_up, val_steady_state, val_ramp_down)
 } else {
-  "600s ramp + 1h steady"
+  sprintf("%s + %s", val_ramp_up, val_steady_state)
 }
 
 det_next_steps <- if (isTRUE(overall_status)) {
@@ -616,51 +642,72 @@ api_key <- tryCatch({
   } else NULL
 }, error = function(e) NULL)
 
-cfg_ai_enabled <- tryCatch({
-  cfg <- if (exists("params_cfg") && !is.null(params_cfg$ai_summary_enabled)) {
-    params_cfg
-  } else if (file.exists(here::here("config.yaml"))) {
-    yaml::read_yaml(here::here("config.yaml"))
-  } else if (file.exists("config.yaml")) {
-    yaml::read_yaml("config.yaml")
-  } else if (file.exists("../config.yaml")) {
-    yaml::read_yaml("../config.yaml")
-  } else list()
-  isTRUE(as.logical(cfg$ai_summary_enabled)) || identical(tolower(as.character(cfg$ai_summary_enabled)), "true")
-}, error = function(e) FALSE)
+cfg_ai_enabled <- isTRUE(as.logical(cfg$ai_summary_enabled)) || identical(tolower(as.character(cfg$ai_summary_enabled)), "true")
 
 if (isTRUE(cfg_ai_enabled) && !is.null(api_key) && nzchar(api_key)) {
-  ai_prompt <- sprintf(
-    "You are a Senior Performance Engineering Principal writing an executive assessment for C-level leadership and programme stakeholders.
+  prompt_template <- if (!is.null(cfg$ai_prompt_template) && nzchar(trimws(cfg$ai_prompt_template))) {
+    as.character(cfg$ai_prompt_template)
+  } else {
+    "You are a Senior Performance Engineering Principal writing a concise executive assessment for C-level leadership and programme stakeholders.
+
 Language & Style Guidelines:
-- Use British English spelling and conventions throughout (e.g., optimised, prioritised, analysed, behaviour, programme, latency characteristics).
-- Maintain an authoritative, concise, objective executive tone. Avoid filler or generic phrases.
-- Produce exactly two concise paragraphs for the assessment and exactly 3 targeted bullet points of next steps.
+- British English spelling throughout (e.g., optimised, prioritised, analysed, behaviour, programme).
+- Executive, concise, and constructive tone. Keep each paragraph short (3-4 sentences max). Avoid unnecessary filler, preamble, or overly harsh/punitive language.
+- Highlight key metrics, critical observations, and governance outcomes using bold formatting (e.g., **337 virtual users**, **15.45 TPS**, **0.05% error rate**, **FAIL**, **5 SLA breaches**, **worst transaction name**).
+- Conclude constructively: if the status is FAIL, advise reviewing the failing transactions and planning targeted remediation to unblock a successful test run, rather than using rigid or punitive language.
+- Produce exactly two concise paragraphs for the assessment and exactly 3 actionable, high-impact bullet points of next steps.
 
 Test Profile & Evidence:
-Application: %s (%s)
-Test Type: %s
-Workload: %s virtual users with %s
-Throughput: %.2f TPS
-Error Rate: %.2f%%
-Latency: %s ms (%s vs Baseline #%s: %s)
-Overall Status: %s
-Breaches: %d (%s), worst: %s at %s ms vs %s ms SLA
-Flow Theme: %s
+Application: {app_names} ({env})
+Test Type: {test_type}
+Workload: {vu_actual} virtual users with {duration_desc}
+Ramp-up: {ramp_up}
+Steady-state: {steady_state}
+Ramp-down: {ramp_down}
+Throughput: {throughput} TPS
+Error Rate: {error_rate}%
+Latency: {latency} ms ({baseline_comp})
+Overall Status: {overall_status}
+Breaches: {breach_cnt} ({rt_metric}), worst: {worst_label} at {worst_rt} ms vs {worst_sla} ms SLA
+Flow Theme: {flow_theme}
 
 Output Format:
-PARAGRAPH 1: Context, workload profile, throughput stability, error rates, and baseline comparison.
-PARAGRAPH 2: Release readiness verdict, business risk of SLA breaches, worst transaction impact, and definitive PASS/FAIL governance verdict.
+PARAGRAPH 1: High-level context: workload profile, sustained throughput, error rate, and baseline comparison. Highlight key numbers in bold.
+PARAGRAPH 2: Release readiness & verdict: observed SLA breaches, worst transaction impact, and a constructive conclusion advising review of failing transactions and remediation planning to unblock a successful test run (**FAIL**). Highlight key observations and verdict in bold.
 Next steps:
-- Step 1: Specific root cause investigation or triage action
-- Step 2: Remediation or configuration tuning action
-- Step 3: Retest or release gating action",
-    app_names_str, env_str, test_type_str, vu_actual, duration_desc,
-    current_run$throughput[1], current_run$error_rate[1],
-    current_rt_fmt, rt_metric_name, baseline_run_id, rt_comp_str,
-    ifelse(isTRUE(overall_status), "PASS", "FAIL"),
-    breach_cnt, rt_metric_name, worst_label, worst_rt, worst_sla, flow_theme
+- Step 1: Specific root cause triage action (highlight key component/transaction in bold)
+- Step 2: Targeted remediation action
+- Step 3: Retest and release gating criterion"
+  }
+
+  template_vars <- list(
+    app_names       = app_names_str,
+    env             = env_str,
+    test_type       = test_type_str,
+    vu_actual       = as.character(vu_actual),
+    duration_desc   = duration_desc,
+    ramp_up         = val_ramp_up,
+    steady_state    = val_steady_state,
+    ramp_down       = ifelse(nzchar(val_ramp_down), val_ramp_down, "none"),
+    throughput      = sprintf("%.2f", current_run$throughput[1]),
+    error_rate      = sprintf("%.2f", current_run$error_rate[1]),
+    latency         = current_rt_fmt,
+    current_rt      = current_rt_fmt,
+    rt_metric       = rt_metric_name,
+    baseline_run_id = as.character(baseline_run_id),
+    baseline_comp   = sprintf("%s vs Baseline #%s: %s", rt_metric_name, baseline_run_id, rt_comp_str),
+    overall_status  = ifelse(isTRUE(overall_status), "PASS", "FAIL"),
+    breach_cnt      = as.character(breach_cnt),
+    worst_label     = worst_label,
+    worst_rt        = as.character(worst_rt),
+    worst_sla       = as.character(worst_sla),
+    flow_theme      = flow_theme
   )
+
+  ai_prompt <- prompt_template
+  for (var_name in names(template_vars)) {
+    ai_prompt <- gsub(paste0("{", var_name, "}"), template_vars[[var_name]], ai_prompt, fixed = TRUE)
+  }
 
   ai_text <- tryCatch({
     ai_url <- if (exists("params_cfg") && !is.null(params_cfg$ai_url)) params_cfg$ai_url else "https://amplify.planittesting.com/external/api/completion"
@@ -743,6 +790,14 @@ Next steps:
     }
   }
 }
+
+to_html_bold <- function(x) {
+  gsub("\\*\\*(.*?)\\*\\*", "<strong>\\1</strong>", x)
+}
+
+final_p1 <- to_html_bold(final_p1)
+final_p2 <- to_html_bold(final_p2)
+final_next_steps <- to_html_bold(final_next_steps)
 
 next_steps_items_html <- paste(sprintf("<li>%s</li>", final_next_steps), collapse = "")
 
@@ -2552,6 +2607,190 @@ glossary_panels_html <- paste(
   collapse = "\n"
 )
 
+# ---- 8E-bis. SLA Configuration & Thresholds Modal ----
+cfg_sla <- if (exists("sla_config") && !is.null(sla_config)) {
+  sla_config
+} else if (!is.null(cfg$sla_rules) || !is.null(cfg$response_time_sla)) {
+  cfg
+} else if (!is.null(cfg$sla_file_path) && file.exists(here::here(cfg$sla_file_path))) {
+  yaml::read_yaml(here::here(cfg$sla_file_path))
+} else NULL
+
+rt_sla    <- if (!is.null(cfg_sla)) cfg_sla$response_time_sla else NULL
+sla_rules <- if (!is.null(cfg_sla)) cfg_sla$sla_rules else NULL
+
+tps_rule <- Filter(function(x) identical(x$metric, "throughput"), sla_rules)
+tps_rule <- if (length(tps_rule) > 0) tps_rule[[1]] else NULL
+
+er_rule <- Filter(function(x) identical(x$metric, "error_rate"), sla_rules)
+er_rule <- if (length(er_rule) > 0) er_rule[[1]] else NULL
+
+vu_rule <- Filter(function(x) identical(x$metric, "total_users"), sla_rules)
+vu_rule <- if (length(vu_rule) > 0) vu_rule[[1]] else NULL
+
+rt_metric_str <- if (!is.null(rt_sla) && !is.null(rt_sla$metric)) toupper(rt_sla$metric) else "P95"
+rt_default_val <- if (!is.null(rt_sla) && !is.null(rt_sla$default_threshold)) format(round(as.numeric(rt_sla$default_threshold)), big.mark = ",") else "3,000"
+rt_unit_str <- if (!is.null(rt_sla) && !is.null(rt_sla$unit)) rt_sla$unit else "ms"
+rt_tol_str <- if (!is.null(rt_sla) && !is.null(rt_sla$tolerance_pct)) paste0(rt_sla$tolerance_pct, "%") else "0% (strict)"
+
+rt_rows <- c()
+rt_rows <- c(rt_rows, sprintf(
+  "<tr><td style='font-weight:600;'>Global Default (Unlisted Transactions)</td><td><span style='background:#E0E7FF;color:#3730A3;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;'>Global Fallback</span></td><td class='numeric-cell' style='font-weight:700;color:#1E293B;'>%s %s</td><td>Tolerance: %s. Applies to any transaction not specifically overridden below.</td></tr>",
+  rt_default_val, rt_unit_str, rt_tol_str
+))
+if (!is.null(rt_sla$overrides) && length(rt_sla$overrides) > 0) {
+  for (ov in rt_sla$overrides) {
+    ov_type <- if (grepl("^[A-Za-z0-9_-]+$", ov$label) && nchar(ov$label) > 20) "Exact Match" else "Prefix Match"
+    rt_rows <- c(rt_rows, sprintf(
+      "<tr><td style='font-weight:600;'><code>%s</code></td><td><span style='background:#FEF3C7;color:#92400E;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;'>%s</span></td><td class='numeric-cell' style='font-weight:700;color:#1E293B;'>%s %s</td><td>Custom threshold rule for %s flows matching '<code>%s</code>'.</td></tr>",
+      ov$label, ov_type, format(round(as.numeric(ov$threshold)), big.mark = ","), rt_unit_str, ov$label, ov$label
+    ))
+  }
+}
+slarules_rt_table_html <- sprintf(
+  '<table class="hd-table" style="margin-top:6px;">
+    <thead>
+      <tr>
+        <th>Scope / Transaction Pattern</th>
+        <th>Match Type</th>
+        <th class="numeric-header">Threshold (%s)</th>
+        <th>Rule Description &amp; Application</th>
+      </tr>
+    </thead>
+    <tbody>%s</tbody>
+  </table>',
+  rt_unit_str, paste(rt_rows, collapse = "\n")
+)
+
+tps_rows <- c()
+tps_default_val <- if (!is.null(tps_rule) && !is.null(tps_rule$threshold)) as.numeric(tps_rule$threshold) else 5.1
+tps_rows <- c(tps_rows, sprintf(
+  "<tr><td style='font-weight:600;'>Global Estate Baseline</td><td style='text-align:center;'><span style='background:#E0E7FF;color:#3730A3;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;'>Baseline Rule</span></td><td style='text-align:center;font-weight:600;'>&gt;=</td><td class='numeric-cell' style='font-weight:700;color:#1E293B;'>%.2f TPS</td><td>Default throughput threshold required across applications.</td></tr>",
+  tps_default_val
+))
+if (!is.null(tps_rule) && !is.null(tps_rule$application_thresholds) && length(tps_rule$application_thresholds) > 0) {
+  for (at in tps_rule$application_thresholds) {
+    tps_rows <- c(tps_rows, sprintf(
+      "<tr><td style='font-weight:600;'>%s</td><td style='text-align:center;'><span style='background:#FEF3C7;color:#92400E;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;'>App Override</span></td><td style='text-align:center;font-weight:600;'>&gt;=</td><td class='numeric-cell' style='font-weight:700;color:#1E293B;'>%.2f TPS</td><td>Specific sustained throughput requirement for %s.</td></tr>",
+      at$app_name, as.numeric(at$threshold), at$app_name
+    ))
+  }
+}
+slarules_tps_table_html <- sprintf(
+  '<table class="hd-table" style="margin-top:6px;">
+    <thead>
+      <tr>
+        <th>Application Scope</th>
+        <th style="text-align:center;">Rule Type</th>
+        <th style="text-align:center;">Operator</th>
+        <th class="numeric-header">Target Throughput</th>
+        <th>Description &amp; Context</th>
+      </tr>
+    </thead>
+    <tbody>%s</tbody>
+  </table>',
+  paste(tps_rows, collapse = "\n")
+)
+
+er_rows <- c()
+er_default_val <- if (!is.null(er_rule) && !is.null(er_rule$threshold)) as.numeric(er_rule$threshold) else 10.0
+er_rows <- c(er_rows, sprintf(
+  "<tr><td style='font-weight:600;'>Global Estate Maximum</td><td style='text-align:center;'><span style='background:#E0E7FF;color:#3730A3;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;'>Baseline Rule</span></td><td style='text-align:center;font-weight:600;'>&lt;=</td><td class='numeric-cell' style='font-weight:700;color:#1E293B;'>%.2f%%</td><td>Maximum allowable scenario error percentage.</td></tr>",
+  er_default_val
+))
+if (!is.null(er_rule) && !is.null(er_rule$application_thresholds) && length(er_rule$application_thresholds) > 0) {
+  for (at in er_rule$application_thresholds) {
+    er_rows <- c(er_rows, sprintf(
+      "<tr><td style='font-weight:600;'>%s</td><td style='text-align:center;'><span style='background:#FEF3C7;color:#92400E;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;'>App Override</span></td><td style='text-align:center;font-weight:600;'>&lt;=</td><td class='numeric-cell' style='font-weight:700;color:#1E293B;'>%.2f%%</td><td>Specific maximum allowable error rate threshold for %s.</td></tr>",
+      at$app_name, as.numeric(at$threshold), at$app_name
+    ))
+  }
+}
+slarules_er_table_html <- sprintf(
+  '<table class="hd-table" style="margin-top:6px;">
+    <thead>
+      <tr>
+        <th>Application Scope</th>
+        <th style="text-align:center;">Rule Type</th>
+        <th style="text-align:center;">Operator</th>
+        <th class="numeric-header">Max Error Rate</th>
+        <th>Description &amp; Context</th>
+      </tr>
+    </thead>
+    <tbody>%s</tbody>
+  </table>',
+  paste(er_rows, collapse = "\n")
+)
+
+slarules_all_html <- sprintf(
+  '<div style="display:flex; flex-direction:column; gap:16px;">
+     <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:10px;">
+       <div class="hd-kpi-tile" style="border-left-color:#2563EB; margin:0;">
+         <div class="hd-kpi-label">RESPONSE TIME METRIC</div>
+         <div class="hd-kpi-value" style="color:#2563EB;">%s</div>
+         <div class="hd-kpi-sub">Default: <strong>%s %s</strong> (%d Overrides)</div>
+       </div>
+       <div class="hd-kpi-tile" style="border-left-color:#059669; margin:0;">
+         <div class="hd-kpi-label">THROUGHPUT TARGET</div>
+         <div class="hd-kpi-value" style="color:#059669;">&gt;= %.2f TPS</div>
+         <div class="hd-kpi-sub">%d Application Thresholds Configured</div>
+       </div>
+       <div class="hd-kpi-tile" style="border-left-color:#DC2626; margin:0;">
+         <div class="hd-kpi-label">MAX ERROR RATE</div>
+         <div class="hd-kpi-value" style="color:#DC2626;">&lt;= %.2f%%</div>
+         <div class="hd-kpi-sub">%d Application Thresholds Configured</div>
+       </div>
+       <div class="hd-kpi-tile" style="border-left-color:#7C3AED; margin:0;">
+         <div class="hd-kpi-label">CONCURRENCY GATE</div>
+         <div class="hd-kpi-value" style="color:#7C3AED;">&gt;= %d VU</div>
+         <div class="hd-kpi-sub">Active Run Validation Gate</div>
+       </div>
+     </div>
+
+     <div style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:6px; padding:10px 14px;">
+       <div style="font-weight:700; font-size:12px; color:#0F172A; margin-bottom:4px;">⏱️ Response Time Thresholds &amp; Overrides (SLA Metric: %s)</div>
+       %s
+     </div>
+
+     <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+       <div style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:6px; padding:10px 14px;">
+         <div style="font-weight:700; font-size:12px; color:#0F172A; margin-bottom:4px;">🚀 Throughput Targets by Application</div>
+         %s
+       </div>
+       <div style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:6px; padding:10px 14px;">
+         <div style="font-weight:700; font-size:12px; color:#0F172A; margin-bottom:4px;">⚠️ Maximum Allowable Error Rates</div>
+         %s
+       </div>
+     </div>
+   </div>',
+  rt_metric_str, rt_default_val, rt_unit_str, if (!is.null(rt_sla$overrides)) length(rt_sla$overrides) else 0L,
+  tps_default_val, if (!is.null(tps_rule$application_thresholds)) length(tps_rule$application_thresholds) else 0L,
+  er_default_val, if (!is.null(er_rule$application_thresholds)) length(er_rule$application_thresholds) else 0L,
+  if (!is.null(vu_rule)) as.integer(vu_rule$threshold) else 1L,
+  rt_metric_str,
+  slarules_rt_table_html,
+  slarules_tps_table_html,
+  slarules_er_table_html
+)
+
+slarules_tab_ids <- c("ALL", "RT", "TPS", "ERROR")
+slarules_tabs_html <- paste0(
+  '<label for="hd-tab-slarules-ALL" class="hd-modal-tab-btn" data-mode="slarules" data-tab-id="ALL">All SLA Rules</label>',
+  sprintf('<label for="hd-tab-slarules-RT" class="hd-modal-tab-btn" data-mode="slarules" data-tab-id="RT">⏱️ Response Time SLAs (%s)</label>', rt_metric_str),
+  '<label for="hd-tab-slarules-TPS" class="hd-modal-tab-btn" data-mode="slarules" data-tab-id="TPS">🚀 Throughput Targets</label>',
+  '<label for="hd-tab-slarules-ERROR" class="hd-modal-tab-btn" data-mode="slarules" data-tab-id="ERROR">⚠️ Error Rate Limits</label>'
+)
+
+slarules_panels_html <- paste(
+  c(
+    sprintf('<div id="slarules-data-ALL" class="hd-tab-panel">%s</div>', slarules_all_html),
+    sprintf('<div id="slarules-data-RT" class="hd-tab-panel"><div style="background:#F8FAFC;border:1px solid #E2E8F0;border-radius:6px;padding:12px 14px;"><div style="font-weight:700;font-size:12px;color:#0F172A;margin-bottom:6px;">⏱️ Response Time SLA Rules (Evaluated Metric: %s, Tolerance: %s)</div>%s</div></div>', rt_metric_str, rt_tol_str, slarules_rt_table_html),
+    sprintf('<div id="slarules-data-TPS" class="hd-tab-panel"><div style="background:#F8FAFC;border:1px solid #E2E8F0;border-radius:6px;padding:12px 14px;"><div style="font-weight:700;font-size:12px;color:#0F172A;margin-bottom:6px;">🚀 Throughput SLA Targets (Default: &gt;= %.2f TPS)</div>%s</div></div>', tps_default_val, slarules_tps_table_html),
+    sprintf('<div id="slarules-data-ERROR" class="hd-tab-panel"><div style="background:#F8FAFC;border:1px solid #E2E8F0;border-radius:6px;padding:12px 14px;"><div style="font-weight:700;font-size:12px;color:#0F172A;margin-bottom:6px;">⚠️ Error Rate SLA Limits (Default: &lt;= %.2f%%)</div>%s</div></div>', er_default_val, slarules_er_table_html)
+  ),
+  collapse = "\n"
+)
+
 # ---- 8F. Build Pure-CSS Radio/Checkbox State Machine + Pre-Rendered Modal Shell ----
 build_mode_tab_state <- function(mode, tab_ids) {
   inputs <- sapply(seq_along(tab_ids), function(idx) {
@@ -2576,6 +2815,7 @@ st_sla      <- build_mode_tab_state("sla", sla_tab_ids)
 st_scenario <- build_mode_tab_state("scenario", scenario_tab_ids)
 st_label    <- build_mode_tab_state("label", label_tab_ids)
 st_error    <- build_mode_tab_state("error", error_tab_ids)
+st_slarules <- build_mode_tab_state("slarules", slarules_tab_ids)
 st_glossary <- build_mode_tab_state("glossary", glossary_tab_ids)
 st_evidence <- if (has_evidence) build_mode_tab_state("evidence", evidence_tab_ids) else list(inputs = "", css = "")
 
@@ -2690,6 +2930,7 @@ root_state_inputs_html <- paste(
   '<input type="radio" name="hd-modal-mode" id="hd-mode-scenario" class="hd-state-input" />',
   '<input type="radio" name="hd-modal-mode" id="hd-mode-label" class="hd-state-input" />',
   '<input type="radio" name="hd-modal-mode" id="hd-mode-error" class="hd-state-input" />',
+  '<input type="radio" name="hd-modal-mode" id="hd-mode-slarules" class="hd-state-input" />',
   '<input type="radio" name="hd-modal-mode" id="hd-mode-glossary" class="hd-state-input" />',
   if (has_evidence) '<input type="radio" name="hd-modal-mode" id="hd-mode-evidence" class="hd-state-input" />' else '',
   scen_drill_inputs,
@@ -2700,9 +2941,10 @@ root_state_inputs_html <- paste(
   st_scenario$inputs,
   st_label$inputs,
   st_error$inputs,
+  st_slarules$inputs,
   st_glossary$inputs,
   st_evidence$inputs,
-  sprintf('<style>\n%s\n</style>', paste(c(st_charts$css, st_sla$css, st_scenario$css, st_label$css, st_error$css, st_glossary$css, st_evidence$css, scen_drill_css, st_scen_app_css, st_charts_app_css), collapse = "\n")),
+  sprintf('<style>\n%s\n</style>', paste(c(st_charts$css, st_sla$css, st_scenario$css, st_label$css, st_error$css, st_slarules$css, st_glossary$css, st_evidence$css, scen_drill_css, st_scen_app_css, st_charts_app_css), collapse = "\n")),
   sep = "\n"
 )
 
@@ -2718,6 +2960,7 @@ modal_html <- paste0(
   '          <span class="hd-modal-title-item" data-mode="scenario">🧭 Scenario Health Details</span>',
   '          <span class="hd-modal-title-item" data-mode="label">🔥 Transaction Response Time SLA Breakdown</span>',
   '          <span class="hd-modal-title-item" data-mode="error">⚠️ HTTP Error Code &amp; Message Breakdown</span>',
+  '          <span class="hd-modal-title-item" data-mode="slarules">⚖️ Configured SLA Rules &amp; Thresholds (config.yaml)</span>',
   '          <span class="hd-modal-title-item" data-mode="glossary">📖 Performance Terms &amp; Metrics Glossary</span>',
   '          <span class="hd-modal-title-item" data-mode="evidence">🖥 Infrastructure Evidence (CPU / Memory)</span>',
   '        </h4>',
@@ -2728,6 +2971,7 @@ modal_html <- paste0(
   '        <label for="hd-mode-scenario" class="hd-modal-mode-btn" data-mode="scenario" data-open-mode="scenario" style="background:#1E293B; color:#E2E8F0; border:1px solid #475569; border-radius:4px; padding:3px 9px; font-size:11px; font-weight:600; cursor:pointer; margin:0;">🧭 Scenarios</label>',
   '        <label for="hd-mode-label" class="hd-modal-mode-btn" data-mode="label" data-open-mode="label" style="background:#1E293B; color:#E2E8F0; border:1px solid #475569; border-radius:4px; padding:3px 9px; font-size:11px; font-weight:600; cursor:pointer; margin:0;">🔥 Transaction RT SLA</label>',
   '        <label for="hd-mode-error" class="hd-modal-mode-btn" data-mode="error" data-open-mode="error" style="background:#1E293B; color:#E2E8F0; border:1px solid #475569; border-radius:4px; padding:3px 9px; font-size:11px; font-weight:600; cursor:pointer; margin:0;">⚠️ HTTP Errors</label>',
+  '        <label for="hd-mode-slarules" class="hd-modal-mode-btn" data-mode="slarules" data-open-mode="slarules" data-open-tab="ALL" style="background:#1E293B; color:#E2E8F0; border:1px solid #475569; border-radius:4px; padding:3px 9px; font-size:11px; font-weight:600; cursor:pointer; margin:0;">⚖️ SLA Criteria</label>',
   '        <label for="hd-mode-glossary" class="hd-modal-mode-btn" data-mode="glossary" data-open-mode="glossary" style="background:#1E293B; color:#E2E8F0; border:1px solid #475569; border-radius:4px; padding:3px 9px; font-size:11px; font-weight:600; cursor:pointer; margin:0;">📖 Glossary</label>',
   if (has_evidence) '        <label for="hd-mode-evidence" class="hd-modal-mode-btn" data-mode="evidence" data-open-mode="evidence" data-open-tab="ALL" style="background:#1E293B; color:#E2E8F0; border:1px solid #475569; border-radius:4px; padding:3px 9px; font-size:11px; font-weight:600; cursor:pointer; margin:0;">🖥 Infrastructure</label>' else '',
   '        <label for="hd-mode-closed" style="background:transparent; border:none; color:#ffffff; font-size:22px; cursor:pointer; line-height:1; padding:0 6px; margin-left:6px; margin-bottom:0;">&times;</label>',
@@ -2741,6 +2985,7 @@ modal_html <- paste0(
   sprintf('        <div class="hd-filter-group" data-mode="scenario">%s</div>', scenario_tabs_html),
   sprintf('        <div class="hd-filter-group" data-mode="label">%s</div>', label_tabs_html),
   sprintf('        <div class="hd-filter-group" data-mode="error">%s</div>', error_tabs_html),
+  sprintf('        <div class="hd-filter-group" data-mode="slarules">%s</div>', slarules_tabs_html),
   sprintf('        <div class="hd-filter-group" data-mode="glossary">%s</div>', glossary_tabs_html),
   if (has_evidence) sprintf('        <div class="hd-filter-group" data-mode="evidence">%s</div>', evidence_tabs_html) else '',
   '      </div>',
@@ -2751,11 +2996,12 @@ modal_html <- paste0(
   sprintf('      <div class="hd-panel-group" data-mode="scenario">%s</div>', scenario_panels_html),
   sprintf('      <div class="hd-panel-group" data-mode="label">%s</div>', label_panels_html),
   sprintf('      <div class="hd-panel-group" data-mode="error">%s</div>', error_panels_html),
+  sprintf('      <div class="hd-panel-group" data-mode="slarules">%s</div>', slarules_panels_html),
   sprintf('      <div class="hd-panel-group" data-mode="glossary">%s</div>', glossary_panels_html),
   if (has_evidence) sprintf('      <div class="hd-panel-group" data-mode="evidence">%s</div>', evidence_panels_html) else '',
   '    </div>',
   '    <div class="hd-modal-footer">',
-  '      <small style="color:#64748B; font-size:11px;">💡 Tip: Use the top-right switcher buttons or filter pills to navigate between Executive Charts, SLA Status, Scenarios, Transaction RT Breaches, HTTP Errors, and the Performance Glossary. Press <kbd style="background:#E2E8F0; color:#0F172A; padding:1px 5px; border-radius:3px;">ESC</kbd> to close.</small>',
+  '      <small style="color:#64748B; font-size:11px;">💡 Tip: Use the top-right switcher buttons or filter pills to navigate between Executive Charts, SLA Status, Scenarios, Transaction RT Breaches, HTTP Errors, SLA Criteria, and the Performance Glossary. Press <kbd style="background:#E2E8F0; color:#0F172A; padding:1px 5px; border-radius:3px;">ESC</kbd> to close.</small>',
   '      <label for="hd-mode-closed" style="background:#334155; color:#ffffff; border:none; border-radius:4px; padding:4px 14px; font-size:12px; cursor:pointer; font-weight:600; margin:0;">Close</label>',
   '    </div>',
   '  </div>',
@@ -2848,6 +3094,7 @@ modal_html <- paste0(
   window.openLabelModal    = function(scenId) { showDrilldown("label",    scenId || "BREACHES"); };
   window.openErrorModal    = function(txId)   { showDrilldown("error",    txId   || "ALL"); };
   window.openGlossaryModal = function(catId)  { showDrilldown("glossary", catId  || "ALL"); };
+  window.openSlaRulesModal = function(tabId)  { showDrilldown("slarules", tabId  || "ALL"); };
 
   window.closeDrilldownModal = function() {
     var scenClosedRadio = document.getElementById("hd-scen-drill-closed");

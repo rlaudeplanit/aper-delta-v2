@@ -48,7 +48,11 @@ if (!exists("params_cfg")) {
 
 sla_file_path <- params_cfg$sla_file_path
 has_sla_file  <- !is.null(sla_file_path) && nzchar(trimws(sla_file_path)) && file.exists(here::here(sla_file_path))
-sla_config    <- if (has_sla_file) yaml::read_yaml(here::here(sla_file_path)) else NULL
+sla_config    <- if (!is.null(params_cfg$sla_rules) || !is.null(params_cfg$response_time_sla)) {
+  params_cfg
+} else if (has_sla_file) {
+  yaml::read_yaml(here::here(sla_file_path))
+} else NULL
 sla_rules     <- if (!is.null(sla_config)) sla_config$sla_rules else NULL
 rt_sla_config <- if (!is.null(sla_config)) sla_config$response_time_sla else NULL
 

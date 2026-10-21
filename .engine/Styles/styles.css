@@ -1485,6 +1485,7 @@ body.dark-theme .hd-theme-label-light,
 #hd-mode-scenario:checked ~ .hd-viewport #hd-drilldown-modal-backdrop,
 #hd-mode-label:checked ~ .hd-viewport #hd-drilldown-modal-backdrop,
 #hd-mode-error:checked ~ .hd-viewport #hd-drilldown-modal-backdrop,
+#hd-mode-slarules:checked ~ .hd-viewport #hd-drilldown-modal-backdrop,
 #hd-mode-glossary:checked ~ .hd-viewport #hd-drilldown-modal-backdrop,
 #hd-mode-evidence:checked ~ .hd-viewport #hd-drilldown-modal-backdrop {
   display: flex !important;
@@ -1495,6 +1496,7 @@ body.dark-theme .hd-theme-label-light,
 #hd-mode-scenario:checked ~ .hd-viewport .hd-modal-mode-btn[data-mode="scenario"],
 #hd-mode-label:checked ~ .hd-viewport .hd-modal-mode-btn[data-mode="label"],
 #hd-mode-error:checked ~ .hd-viewport .hd-modal-mode-btn[data-mode="error"],
+#hd-mode-slarules:checked ~ .hd-viewport .hd-modal-mode-btn[data-mode="slarules"],
 #hd-mode-glossary:checked ~ .hd-viewport .hd-modal-mode-btn[data-mode="glossary"],
 #hd-mode-evidence:checked ~ .hd-viewport .hd-modal-mode-btn[data-mode="evidence"] {
   background: #2563EB !important;
@@ -1507,6 +1509,7 @@ body.dark-theme .hd-theme-label-light,
 #hd-mode-scenario:checked ~ .hd-viewport .hd-modal-title-item[data-mode="scenario"],
 #hd-mode-label:checked ~ .hd-viewport .hd-modal-title-item[data-mode="label"],
 #hd-mode-error:checked ~ .hd-viewport .hd-modal-title-item[data-mode="error"],
+#hd-mode-slarules:checked ~ .hd-viewport .hd-modal-title-item[data-mode="slarules"],
 #hd-mode-glossary:checked ~ .hd-viewport .hd-modal-title-item[data-mode="glossary"],
 #hd-mode-evidence:checked ~ .hd-viewport .hd-modal-title-item[data-mode="evidence"] {
   display: inline !important;
@@ -1517,6 +1520,7 @@ body.dark-theme .hd-theme-label-light,
 #hd-mode-scenario:checked ~ .hd-viewport .hd-filter-group[data-mode="scenario"],
 #hd-mode-label:checked ~ .hd-viewport .hd-filter-group[data-mode="label"],
 #hd-mode-error:checked ~ .hd-viewport .hd-filter-group[data-mode="error"],
+#hd-mode-slarules:checked ~ .hd-viewport .hd-filter-group[data-mode="slarules"],
 #hd-mode-glossary:checked ~ .hd-viewport .hd-filter-group[data-mode="glossary"],
 #hd-mode-evidence:checked ~ .hd-viewport .hd-filter-group[data-mode="evidence"] {
   display: flex !important;
@@ -1531,6 +1535,7 @@ body.dark-theme .hd-theme-label-light,
 #hd-mode-scenario:checked ~ .hd-viewport .hd-panel-group[data-mode="scenario"],
 #hd-mode-label:checked ~ .hd-viewport .hd-panel-group[data-mode="label"],
 #hd-mode-error:checked ~ .hd-viewport .hd-panel-group[data-mode="error"],
+#hd-mode-slarules:checked ~ .hd-viewport .hd-panel-group[data-mode="slarules"],
 #hd-mode-glossary:checked ~ .hd-viewport .hd-panel-group[data-mode="glossary"],
 #hd-mode-evidence:checked ~ .hd-viewport .hd-panel-group[data-mode="evidence"] {
   display: block !important;
