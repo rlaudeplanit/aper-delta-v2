@@ -2,23 +2,30 @@
 # performance-sla.yaml
 # ------------------------------------------------------------------------------
 # Defines SLA thresholds applied globally across all run_ids in a report.
-# Referenced from config.yaml via: sla_file: "SLA/performance-sla.yaml"
+# Referenced from config.yaml via: sla_file_path: "SLA/performance-sla.yaml"
 #
-# If sla_file is empty or the file is not found, SLA processing is skipped
-# entirely and the report renders normally without SLA indicators.
+# Governance & Metric Toggles:
+#   show_overall_status : Set to false for an informational report (hides the
+#                         OVERALL STATUS: PASS/FAIL verdict and red fail styling).
+#   enabled             : Per-metric toggle (true/false) on individual rules
+#                         and on response_time_sla.
 #
 # Supported operators: "<=", ">=", "<", ">", "=="
 # ==============================================================================
 
+show_overall_status: false
+
 sla_rules:
 
   - metric: total_users
+    enabled: false
     label: "Virtual Users"
     operator: ">="
     threshold: 1
     description: "At least 1 virtual user must be recorded for the run to be valid."
 
   - metric: error_rate
+    enabled: false
     label: "Error Rate"
     operator: "<="
     threshold: 10.00
@@ -39,6 +46,7 @@ sla_rules:
         threshold: 10.00
 
   - metric: throughput
+    enabled: false
     label: "Throughput"
     operator: ">="
     threshold: 5.1
@@ -58,10 +66,11 @@ sla_rules:
       - app_name: "BPM"
         threshold: 5.1
 
-    
+
 # ==============================================================================
 # RESPONSE TIME SLA — per-transaction (label) evaluation
 # ------------------------------------------------------------------------------
+# enabled: true/false toggle for transaction response time SLA evaluation
 # metric: which percentile to evaluate — "p90" or "p95" or "avg"
 # default_threshold: applied to ANY transaction not listed in "overrides"
 # tolerance_pct: allows actual value to exceed threshold by this % and still pass
@@ -72,6 +81,7 @@ sla_rules:
 # ==============================================================================
 
 response_time_sla:
+  enabled: false
   metric: p95
   unit: "ms"
   default_threshold: 3000

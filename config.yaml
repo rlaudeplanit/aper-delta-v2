@@ -17,12 +17,20 @@ ai_summary_enabled: "true"
 ai_url: "https://amplify.planittesting.com/external/api/completion"
 ai_model_id: "19b89d52-23cf-463d-a5bb-c2896a0f8661"
 
+# Timezone Settings
+# Use standard IANA timezone names (e.g., "Pacific/Auckland", "Australia/Sydney", "UTC", "Asia/Manila", "Europe/London")
+# Set display_timezone to "local" or "" to use the machine's system timezone.
+timezone:
+  source_timezone: "UTC"               # Timezone of raw timestamps stored in DB (JMeter epoch is always "UTC")
+  display_timezone: "Pacific/Auckland" # Target timezone for displaying run dates/times in the report
+  show_timezone_abbr: true             # Append timezone abbreviation (e.g., "NZDT", "NZST", "UTC") to timestamps
+
 # Workload Phase Profile (used in Executive Summary & AI prompts)
-# If left empty (""), phases are automatically calculated from the test duration
+# Leave empty ("") to automatically calculate ramp-up, steady state, and ramp-down from test telemetry.
 workload_profile:
-  ramp_up: "10-minute ramp-up (600s)"
-  steady_state: "75 minutes steady state"
-  ramp_down: ""   # Optional: e.g. "5 minutes" (leave empty or "none" if not applicable)
+  ramp_up: ""      # Optional override: e.g. "10-minute ramp-up (600s)"
+  steady_state: "" # Optional override: e.g. "60 minutes steady state"
+  ramp_down: ""    # Optional override: e.g. "5-minute ramp-down (300s)"
 
 # Executive AI Summary Prompt Template
 # Supports variables: {app_names}, {env}, {test_type}, {vu_actual}, {duration_desc},
@@ -31,46 +39,35 @@ workload_profile:
 #                     {baseline_comp}, {overall_status}, {breach_cnt}, {worst_label},
 #                     {worst_rt}, {worst_sla}, {flow_theme}
 ai_prompt_template: |
-  You are a Senior Performance Engineering Principal writing a concise executive assessment
-  for C-level leadership and programme stakeholders.
+  Write a clear, natural executive summary of this performance test for project stakeholders.
 
-  Language & Style:
-  - British English throughout (optimised, prioritised, analysed, behaviour, programme).
-  - Factual, direct, and constructive. No preamble, no filler, no hedging. State what happened.
-  - Lead with numbers. Bold all key metrics and outcomes inline
-    (e.g., **337 virtual users**, **15.45 TPS**, **0.05% error rate**, **FAIL**, **5 SLA breaches**,
-    **worst transaction name**).
-  - Each paragraph: 3–4 sentences maximum.
-  - If status is FAIL: close constructively — identify the path forward, not the failure alone.
-  - Output: exactly two paragraphs followed by exactly three bullet points.
+  Writing Style:
+  - Use plain, natural British English (e.g. optimised, prioritised, analysed, behaviour).
+  - Write the way an experienced performance engineer speaks to a delivery team: clear, conversational, and easy to read.
+  - Avoid stiff corporate jargon, robotic phrasing, or disconnected sentence fragments. Write in complete, natural sentences.
+  - Bold important numbers, transaction names, and outcomes inline (e.g. **289 virtual users**, **14.61 TPS**, **0.00% error rate**, **1,286 ms**, **FAIL**).
+  - If Ramp-down is "none" or empty, simply do not mention ramp-down at all (never write "without ramp-down").
+  - Keep each paragraph to 2–3 clear sentences.
+  - Output exactly two paragraphs followed by "Next steps:" and three plain-English bullet points (do NOT put bracketed tags like [Root cause] or [Remediation] at the start of bullets).
 
-  Test Evidence:
+  Test Results:
   Application : {app_names} ({env})
   Test Type   : {test_type}
-  Workload    : {vu_actual} virtual users | {duration_desc}
-  Ramp-up     : {ramp_up}
-  Steady-state: {steady_state}
-  Ramp-down   : {ramp_down}
+  Workload    : {vu_actual} virtual users ({duration_desc})
   Throughput  : {throughput} TPS
   Error Rate  : {error_rate}%
   Latency     : {latency} ms ({baseline_comp})
   Status      : {overall_status}
-  Breaches    : {breach_cnt} ({rt_metric}) — worst: {worst_label} at {worst_rt} ms vs {worst_sla} ms SLA
-  Test Scope  : {flow_theme}
+  Breaches    : {breach_cnt} ({rt_metric}) — slowest transaction: {worst_label} at {worst_rt} ms vs {worst_sla} ms target
+  Main Flows  : {flow_theme}
 
-  Output:
-  PARAGRAPH 1 — What happened:
-  State the workload, throughput, error rate, and latency against baseline. Numbers first.
-
-  PARAGRAPH 2 — Verdict:
-  State the SLA breach count, name the worst offending transaction, and deliver the
-  verdict (**PASS** or **FAIL**) plainly. If FAIL, close with one constructive sentence
-  on the remediation path.
-
+  Structure:
+  PARAGRAPH 1: Explain how the test ran—how many virtual users it handled, the ramp-up and steady-state profile, the average throughput and error rate, and how overall response time compared to the baseline run.
+  PARAGRAPH 2: Explain how transactions performed against the response time target, naming the slowest transaction if any exceeded the limit. State the overall outcome clearly and close with a helpful, practical recommendation on what to review before the next run.
   Next steps:
-  - [Root cause] Triage action targeting the specific failing component or transaction in bold.
-  - [Remediation] Targeted fix or investigation action.
-  - [Retest] Clear criterion for retest and release gating.
+  - First bullet: Which slow transaction or area to investigate first (bold the transaction name).
+  - Second bullet: What practical tuning or fix to look into.
+  - Third bullet: Re-running the test under the same load to confirm the fix worked.
 
 # ============================================================
 # Label Exclusions
