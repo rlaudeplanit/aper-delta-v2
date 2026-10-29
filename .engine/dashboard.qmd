@@ -158,37 +158,53 @@ is_pass_expr <- "LOWER(TRIM(CAST(success AS VARCHAR))) IN ('true', 'yes', '1')"
 response_code_col <- if (params$tool == "jmeter") "REGEXP_REPLACE(CAST(responseCode AS VARCHAR), '\\.0$', '')" else "'N/A'"
 response_msg_col  <- if (params$tool == "jmeter") "CAST(responseMessage AS VARCHAR)" else "'Unknown Error'"
 
-total_users_expr <- if (params$tool == "jmeter") {
-  "GREATEST(COALESCE(MAX(TRY_CAST(allThreads AS INTEGER)), 0), COUNT(DISTINCT CONCAT(app_name, '|', thread_group, '|', threadName)))"
+csv_users_expr <- if (params$tool == "jmeter") {
+  "GREATEST(COALESCE(MAX(TRY_CAST(allThreads AS INTEGER)), 0), COUNT(DISTINCT CONCAT(thread_group, '|', threadName)))"
 } else {
-  "COUNT(DISTINCT user_index)"
+  "COUNT(DISTINCT CONCAT(COALESCE(population, ''), '|', COALESCE(userPath, ''), '|', COALESCE(threadName, CAST(user_index AS VARCHAR))))"
 }
 
-active_users_expr <- if (params$tool == "jmeter") {
-  "GREATEST(COALESCE(MAX(TRY_CAST(t.allThreads AS INTEGER)), 0), COUNT(DISTINCT CONCAT(t.app_name, '|', t.thread_group, '|', t.threadName)))"
+csv_active_users_expr <- if (params$tool == "jmeter") {
+  "GREATEST(COALESCE(MAX(TRY_CAST(t.allThreads AS INTEGER)), 0), COUNT(DISTINCT CONCAT(t.thread_group, '|', t.threadName)))"
 } else {
-  "COUNT(DISTINCT t.user_index)"
+  "COUNT(DISTINCT CONCAT(COALESCE(t.population, ''), '|', COALESCE(t.userPath, ''), '|', COALESCE(t.threadName, CAST(t.user_index AS VARCHAR))))"
 }
 
 sql_run_summary <- sprintf("
+  WITH csv_vu AS (
+    SELECT
+      run_id,
+      app_name,
+      COALESCE(csv_filename, app_name) AS csv_id,
+      %s AS csv_max_users
+    FROM %s
+    %s
+    GROUP BY run_id, app_name, COALESCE(csv_filename, app_name)
+  ),
+  run_vu AS (
+    SELECT run_id, CAST(SUM(csv_max_users) AS INTEGER) AS total_users
+    FROM csv_vu
+    GROUP BY run_id
+  )
   SELECT
-    run_id,
-    FIRST(sequence_num) AS sequence_num,
-    FIRST(project_name) AS project_name,
-    FIRST(test_name) AS test_name,
-    MIN(timestamp) AS start_time,
-    MAX(timestamp) AS end_time,
-    GREATEST( date_diff('milliseconds', MIN(timestamp), MAX(timestamp)) / 1000.0, 1.0 ) AS duration_secs,
-    %s AS total_users,
+    t.run_id,
+    FIRST(t.sequence_num) AS sequence_num,
+    FIRST(t.project_name) AS project_name,
+    FIRST(t.test_name) AS test_name,
+    MIN(t.timestamp) AS start_time,
+    MAX(t.timestamp) AS end_time,
+    GREATEST( date_diff('milliseconds', MIN(t.timestamp), MAX(t.timestamp)) / 1000.0, 1.0 ) AS duration_secs,
+    COALESCE(MAX(v.total_users), 0) AS total_users,
     COUNT(*) AS total_tx,
     SUM(CASE WHEN %s THEN 1 ELSE 0 END) AS passed_tx,
     SUM(CASE WHEN NOT (%s) THEN 1 ELSE 0 END) AS failed_tx,
-    ROUND(QUANTILE_CONT(elapsed, %f), 0) AS pct_rt
-  FROM %s
+    ROUND(QUANTILE_CONT(t.elapsed, %f), 0) AS pct_rt
+  FROM %s t
+  LEFT JOIN run_vu v ON t.run_id = v.run_id
   %s
-  GROUP BY run_id
+  GROUP BY t.run_id
   ORDER BY sequence_num ASC
-", total_users_expr, is_pass_expr, is_pass_expr, rt_percentile, target_table, where_clause)
+", csv_users_expr, target_table, where_clause, is_pass_expr, is_pass_expr, rt_percentile, target_table, gsub("WHERE ", "WHERE t.", where_clause))
 
 db_run_summary <- dbGetQuery(con, sql_run_summary)
 
@@ -327,116 +343,159 @@ sql_timeseries <- sprintf("
     FROM %s
     %s
     GROUP BY run_id
+  ),
+  csv_minute_vu AS (
+    SELECT
+      t.run_id,
+      t.app_name,
+      COALESCE(t.csv_filename, t.app_name) AS csv_id,
+      CAST(FLOOR(date_diff('seconds', b.min_ts, t.timestamp) / 60.0) AS INTEGER) AS elapsed_min,
+      %s AS csv_active_users
+    FROM %s t
+    JOIN run_bounds b ON t.run_id = b.run_id
+    %s
+    GROUP BY t.run_id, t.app_name, COALESCE(t.csv_filename, t.app_name), elapsed_min
+    HAVING elapsed_min >= 0
+  ),
+  app_minute_vu AS (
+    SELECT run_id, app_name, elapsed_min, CAST(SUM(csv_active_users) AS INTEGER) AS active_users
+    FROM csv_minute_vu
+    GROUP BY run_id, app_name, elapsed_min
+  ),
+  all_minute_vu AS (
+    SELECT run_id, elapsed_min, CAST(SUM(csv_active_users) AS INTEGER) AS active_users
+    FROM csv_minute_vu
+    GROUP BY run_id, elapsed_min
+  ),
+  all_tx_buckets AS (
+    SELECT
+      t.run_id,
+      CAST(FLOOR(date_diff('seconds', b.min_ts, t.timestamp) / 60.0) AS INTEGER) AS elapsed_min,
+      COUNT(*) AS total_tx,
+      SUM(CASE WHEN %s THEN 1 ELSE 0 END) AS passed_tx,
+      SUM(CASE WHEN NOT (%s) THEN 1 ELSE 0 END) AS failed_tx,
+      ROUND(SUM(CASE WHEN %s THEN 1 ELSE 0 END) / 60.0, 2) AS tps,
+      ROUND(QUANTILE_CONT(t.elapsed, %f), 0) AS pct_rt
+    FROM %s t
+    JOIN run_bounds b ON t.run_id = b.run_id
+    %s
+    GROUP BY t.run_id, elapsed_min
+    HAVING elapsed_min >= 0
+  ),
+  app_tx_buckets AS (
+    SELECT
+      t.run_id,
+      t.app_name,
+      CAST(FLOOR(date_diff('seconds', b.min_ts, t.timestamp) / 60.0) AS INTEGER) AS elapsed_min,
+      COUNT(*) AS total_tx,
+      SUM(CASE WHEN %s THEN 1 ELSE 0 END) AS passed_tx,
+      SUM(CASE WHEN NOT (%s) THEN 1 ELSE 0 END) AS failed_tx,
+      ROUND(SUM(CASE WHEN %s THEN 1 ELSE 0 END) / 60.0, 2) AS tps,
+      ROUND(QUANTILE_CONT(t.elapsed, %f), 0) AS pct_rt
+    FROM %s t
+    JOIN run_bounds b ON t.run_id = b.run_id
+    %s
+    GROUP BY t.run_id, t.app_name, elapsed_min
+    HAVING elapsed_min >= 0
   )
   SELECT
-    t.run_id,
+    a.run_id,
     'ALL' AS app_name,
-    CAST(FLOOR(date_diff('seconds', b.min_ts, t.timestamp) / 60.0) AS INTEGER) AS elapsed_min,
-    COUNT(*) AS total_tx,
-    SUM(CASE WHEN %s THEN 1 ELSE 0 END) AS passed_tx,
-    SUM(CASE WHEN NOT (%s) THEN 1 ELSE 0 END) AS failed_tx,
-    ROUND(SUM(CASE WHEN %s THEN 1 ELSE 0 END) / 60.0, 2) AS tps,
-    ROUND(QUANTILE_CONT(t.elapsed, %f), 0) AS pct_rt,
-    %s AS active_users
-  FROM %s t
-  JOIN run_bounds b ON t.run_id = b.run_id
-  %s
-  GROUP BY t.run_id, elapsed_min
-  HAVING elapsed_min >= 0
+    a.elapsed_min,
+    a.total_tx,
+    a.passed_tx,
+    a.failed_tx,
+    a.tps,
+    a.pct_rt,
+    COALESCE(au.active_users, 0) AS active_users
+  FROM all_tx_buckets a
+  LEFT JOIN all_minute_vu au ON a.run_id = au.run_id AND a.elapsed_min = au.elapsed_min
   UNION ALL
   SELECT
-    t.run_id,
-    t.app_name,
-    CAST(FLOOR(date_diff('seconds', b.min_ts, t.timestamp) / 60.0) AS INTEGER) AS elapsed_min,
-    COUNT(*) AS total_tx,
-    SUM(CASE WHEN %s THEN 1 ELSE 0 END) AS passed_tx,
-    SUM(CASE WHEN NOT (%s) THEN 1 ELSE 0 END) AS failed_tx,
-    ROUND(SUM(CASE WHEN %s THEN 1 ELSE 0 END) / 60.0, 2) AS tps,
-    ROUND(QUANTILE_CONT(t.elapsed, %f), 0) AS pct_rt,
-    %s AS active_users
-  FROM %s t
-  JOIN run_bounds b ON t.run_id = b.run_id
-  %s
-  GROUP BY t.run_id, t.app_name, elapsed_min
-  HAVING elapsed_min >= 0
+    ap.run_id,
+    ap.app_name,
+    ap.elapsed_min,
+    ap.total_tx,
+    ap.passed_tx,
+    ap.failed_tx,
+    ap.tps,
+    ap.pct_rt,
+    COALESCE(apu.active_users, 0) AS active_users
+  FROM app_tx_buckets ap
+  LEFT JOIN app_minute_vu apu ON ap.run_id = apu.run_id AND ap.app_name = apu.app_name AND ap.elapsed_min = apu.elapsed_min
   ORDER BY run_id, app_name, elapsed_min ASC
-", target_table, where_clause, is_pass_expr, is_pass_expr, is_pass_expr, rt_percentile, active_users_expr, target_table, where_clause_t,
-   is_pass_expr, is_pass_expr, is_pass_expr, rt_percentile, active_users_expr, target_table, where_clause_t)
+", target_table, where_clause, csv_active_users_expr, target_table, where_clause_t,
+   is_pass_expr, is_pass_expr, is_pass_expr, rt_percentile, target_table, where_clause_t,
+   is_pass_expr, is_pass_expr, is_pass_expr, rt_percentile, target_table, where_clause_t)
 
 db_timeseries <- dbGetQuery(con, sql_timeseries)
 
-# 3G-2. Telemetry-Based Workload Phase Detection (Ramp-Up, Steady State, Ramp-Down)
+# 3G-2. Telemetry-Based Workload Phase Detection (Multi-JMX / Multi-CSV Ramp-Up, Steady State, Ramp-Down)
 sql_workload_phases <- if (params$tool == "jmeter") {
   sprintf("
-    WITH run_peaks AS (
+    WITH csv_peaks AS (
       SELECT
         run_id,
-        MIN(timestamp) AS min_ts,
-        MAX(timestamp) AS max_ts,
-        COALESCE(MAX(TRY_CAST(allThreads AS INTEGER)), 0) AS peak_all_threads
+        app_name,
+        COALESCE(csv_filename, app_name) AS csv_id,
+        MIN(timestamp) AS csv_min_ts,
+        MAX(timestamp) AS csv_max_ts,
+        COALESCE(MAX(TRY_CAST(allThreads AS INTEGER)), 0) AS csv_peak_threads
       FROM %s
       %s
-      GROUP BY run_id
+      GROUP BY run_id, app_name, COALESCE(csv_filename, app_name)
     ),
-    thread_births AS (
+    csv_boundaries AS (
       SELECT
-        run_id,
-        CONCAT(app_name, '|', thread_group, '|', threadName) AS tid,
-        MIN(timestamp) AS birth_ts
-      FROM %s
+        t.run_id,
+        p.csv_id,
+        p.csv_min_ts,
+        p.csv_max_ts,
+        p.csv_peak_threads,
+        MIN(CASE WHEN p.csv_peak_threads > 0 AND TRY_CAST(t.allThreads AS INTEGER) >= p.csv_peak_threads THEN t.timestamp END) AS csv_first_steady_ts,
+        MAX(CASE WHEN p.csv_peak_threads > 0 AND TRY_CAST(t.allThreads AS INTEGER) >= FLOOR(p.csv_peak_threads * 0.98) THEN t.timestamp END) AS csv_last_steady_ts
+      FROM %s t
+      JOIN csv_peaks p ON t.run_id = p.run_id AND COALESCE(t.csv_filename, t.app_name) = p.csv_id
       %s
-      GROUP BY run_id, tid
-    ),
-    birth_quantiles AS (
-      SELECT
-        run_id,
-        QUANTILE_CONT(birth_ts, 0.98) AS p98_birth_ts
-      FROM thread_births
-      GROUP BY run_id
+      GROUP BY t.run_id, p.csv_id, p.csv_min_ts, p.csv_max_ts, p.csv_peak_threads
     )
     SELECT
-      t.run_id,
-      p.peak_all_threads,
+      run_id,
+      CAST(SUM(csv_peak_threads) AS INTEGER) AS peak_all_threads,
       CASE
-        WHEN p.peak_all_threads > 0 THEN
-          COALESCE(date_diff('seconds', p.min_ts, MIN(CASE WHEN TRY_CAST(t.allThreads AS INTEGER) >= p.peak_all_threads THEN t.timestamp END)), 0)
-        ELSE
-          COALESCE(date_diff('seconds', p.min_ts, bq.p98_birth_ts), 0)
+        WHEN SUM(csv_peak_threads) > 0 THEN
+          COALESCE(date_diff('seconds', MIN(csv_min_ts), MAX(csv_first_steady_ts)), 0)
+        ELSE CAST(NULL AS BIGINT)
       END AS ramp_up_secs,
       CASE
-        WHEN p.peak_all_threads > 0 THEN
-          COALESCE(date_diff('seconds', MAX(CASE WHEN TRY_CAST(t.allThreads AS INTEGER) >= FLOOR(p.peak_all_threads * 0.98) THEN t.timestamp END), p.max_ts), 0)
+        WHEN SUM(csv_peak_threads) > 0 THEN
+          COALESCE(
+            date_diff(
+              'seconds',
+              CASE
+                WHEN MIN(csv_last_steady_ts) > MAX(csv_first_steady_ts) THEN MIN(csv_last_steady_ts)
+                ELSE MAX(csv_last_steady_ts)
+              END,
+              MAX(csv_max_ts)
+            ),
+            0
+          )
         ELSE CAST(NULL AS BIGINT)
       END AS ramp_down_secs
-    FROM %s t
-    JOIN run_peaks p ON t.run_id = p.run_id
-    LEFT JOIN birth_quantiles bq ON t.run_id = bq.run_id
-    %s
-    GROUP BY t.run_id, p.min_ts, p.max_ts, p.peak_all_threads, bq.p98_birth_ts
-  ", target_table, where_clause, target_table, where_clause, target_table, where_clause_t)
+    FROM csv_boundaries
+    GROUP BY run_id
+  ", target_table, where_clause, target_table, where_clause_t)
 } else {
   sprintf("
-    WITH run_peaks AS (
-      SELECT run_id, MIN(timestamp) AS min_ts, MAX(timestamp) AS max_ts
-      FROM %s
-      %s
-      GROUP BY run_id
-    ),
-    user_births AS (
-      SELECT run_id, user_index, MIN(timestamp) AS birth_ts
-      FROM %s
-      %s
-      GROUP BY run_id, user_index
-    )
     SELECT
-      p.run_id,
+      run_id,
       0 AS peak_all_threads,
-      COALESCE(date_diff('seconds', p.min_ts, QUANTILE_CONT(ub.birth_ts, 0.98)), 0) AS ramp_up_secs,
+      CAST(NULL AS BIGINT) AS ramp_up_secs,
       CAST(NULL AS BIGINT) AS ramp_down_secs
-    FROM run_peaks p
-    LEFT JOIN user_births ub ON p.run_id = ub.run_id
-    GROUP BY p.run_id, p.min_ts
-  ", target_table, where_clause, target_table, where_clause)
+    FROM %s
+    %s
+    GROUP BY run_id
+  ", target_table, where_clause)
 }
 
 db_workload_phases <- dbGetQuery(con, sql_workload_phases)
@@ -445,19 +504,38 @@ db_run_summary <- db_run_summary %>%
   left_join(db_workload_phases, by = "run_id") %>%
   rowwise() %>%
   mutate(
-    ramp_up_mins = ifelse(!is.na(ramp_up_secs) && ramp_up_secs >= 0, round(as.numeric(ramp_up_secs) / 60, 0), min(10, max(5, round(duration_mins * 0.15)))),
+    ramp_up_mins = {
+      if (!is.na(ramp_up_secs) && ramp_up_secs >= 0) {
+        round(as.numeric(ramp_up_secs) / 60, 0)
+      } else {
+        ts_r <- db_timeseries %>% filter(run_id == .data$run_id, app_name == "ALL") %>% arrange(elapsed_min)
+        if (nrow(ts_r) > 2 && max(ts_r$active_users, na.rm = TRUE) > 0) {
+          steady_u <- as.numeric(quantile(ts_r$active_users, probs = 0.90, na.rm = TRUE))
+          steady_idx <- which(ts_r$active_users >= floor(steady_u * 0.96))
+          if (length(steady_idx) > 0) ts_r$elapsed_min[min(steady_idx)] else min(10, max(5, round(duration_mins * 0.15)))
+        } else {
+          min(10, max(5, round(duration_mins * 0.15)))
+        }
+      }
+    },
     ramp_down_mins = {
       if (!is.na(ramp_down_secs)) {
         ifelse(as.numeric(ramp_down_secs) >= 60, round(as.numeric(ramp_down_secs) / 60, 0), 0)
       } else {
-        ts_r <- db_timeseries %>% filter(run_id == .data$run_id, app_name == "ALL") %>% arrange(elapsed_min)
-        if (nrow(ts_r) > 2 && tail(ts_r$total_tx, 1) < 0.25 * median(ts_r$total_tx, na.rm = TRUE)) {
-          ts_r <- ts_r[-nrow(ts_r), , drop = FALSE]
-        }
-        if (nrow(ts_r) > 2 && max(ts_r$active_users, na.rm = TRUE) > 0) {
-          pk_u <- max(ts_r$active_users, na.rm = TRUE)
-          steady_idx <- which(ts_r$active_users >= floor(pk_u * 0.90))
-          if (length(steady_idx) > 0) max(0, max(ts_r$elapsed_min) - ts_r$elapsed_min[max(steady_idx)]) else 0
+        ts_apps <- db_timeseries %>% filter(run_id == .data$run_id, app_name != "ALL")
+        if (nrow(ts_apps) > 0) {
+          app_rds <- sapply(unique(ts_apps$app_name), function(aname) {
+            ts_a <- ts_apps %>% filter(app_name == aname) %>% arrange(elapsed_min)
+            if (nrow(ts_a) > 2 && tail(ts_a$total_tx, 1) < 0.50 * median(ts_a$total_tx, na.rm = TRUE)) {
+              ts_a <- ts_a[-nrow(ts_a), , drop = FALSE]
+            }
+            if (nrow(ts_a) > 2 && max(ts_a$active_users, na.rm = TRUE) > 0) {
+              st_u <- as.numeric(quantile(ts_a$active_users, probs = 0.75, na.rm = TRUE))
+              st_idx <- which(ts_a$active_users >= floor(st_u * 0.85))
+              if (length(st_idx) > 0) max(0, max(ts_a$elapsed_min) - ts_a$elapsed_min[max(st_idx)]) else 0
+            } else 0
+          })
+          max(app_rds, na.rm = TRUE)
         } else 0
       }
     },
