@@ -13,7 +13,7 @@ database_path: "Data/Performance_Vault.db" # Update if needed e.g. //<host>/shar
 
 sla_file_path: "SLA/performance-sla.yaml" # Update if needed
 evidence_dir: "Evidence" # Optional folder for manual CPU/Memory screenshots per run (e.g. Evidence/100002/*.png)
-ai_summary_enabled: "true"
+ai_summary_enabled: "false"
 ai_url: "https://amplify.planittesting.com/external/api/completion"
 ai_model_id: "19b89d52-23cf-463d-a5bb-c2896a0f8661"
 
@@ -101,7 +101,8 @@ label_exclusions:
   - BDR_pacing
   - TAS_pacing
   - c_CMS_Pacing
-# System Default Engine - DO NOT EDIT
+# Canonical Engine & External Tool Mappings
+# All external tools map incoming column headers to canonical JMeter field names during ingestion.
 tool_type: "jmeter"
 tool_mappings:
   jmeter:
@@ -122,8 +123,6 @@ tool_mappings:
     Latency: "Latency"
     IdleTime: "IdleTime"
     Connect: "Connect"
-    userPath: "" # JMeter-native doesn't use this, left empty
-    population: "" # JMeter-native doesn't use this, left empty
 
   neoload:
     timestamp: "Time" # NeoLoad raw files usually call this 'Time' or 'Date'

@@ -130,13 +130,11 @@ if [ "$CHOICE" = "2" ]; then
 
 else
   OP_MODE="report"
-
-  select_tool_type TOOL_TYPE
+  TOOL_TYPE="jmeter"
 
   # Display recent runs
   "$RSCRIPT_EXE" --vanilla "$RSCRIPT_PATH" \
-    "--opMode=menu" \
-    "--active_tool=$TOOL_TYPE"
+    "--opMode=menu"
 
   # Collect Run Inputs (Current and Baseline)
   echo ""

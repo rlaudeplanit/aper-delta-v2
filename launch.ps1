@@ -99,28 +99,11 @@ if ($choice -eq "2") {
 ###################################################
 } else {
     $opMode = "report"
-
-    Write-Host "`nSelect Tool Type for Report:" -ForegroundColor Yellow
-    Write-Host "1. JMeter (Default)"
-    Write-Host "2. NeoLoad"
-
-    while ($true) {
-        $toolChoice = (Read-Host "Enter choice (1 or 2, or press Enter for default)").Trim()
-        if ([string]::IsNullOrWhiteSpace($toolChoice) -or $toolChoice -eq "1") {
-            $toolType = "jmeter"
-            break
-        }
-        if ($toolChoice -eq "2") {
-            $toolType = "neoload"
-            break
-        }
-        Write-Host "Invalid choice! Please enter 1, 2, or press Enter." -ForegroundColor Red
-    }
+    $toolType = "jmeter"
 
     # --- Display recent runs ---
     & $RScriptExePath --vanilla $RScript `
-        "--opMode=menu" `
-        "--active_tool=$toolType"
+        "--opMode=menu"
 
     # --- Collect Run Inputs (Current and Baseline) ---
     Write-Host "`nReport Run Selection (Current and Base):" -ForegroundColor Yellow

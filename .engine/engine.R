@@ -188,11 +188,21 @@ parse_csv_filename <- function(filename) {
 # --- [MENU INTERCEPTOR] ---
 if (opMode == "menu") {
   if (file.exists(db_path)) {
-    con          <- dbConnect(duckdb(), dbdir = db_path, read_only = TRUE)
-    target_table <- paste0("performance_history_", active_tool)
+    con              <- dbConnect(duckdb(), dbdir = db_path, read_only = TRUE)
+    available_tables <- dbListTables(con)
+    target_table     <- if ("performance_history" %in% available_tables) {
+      "performance_history"
+    } else if (paste0("performance_history_", active_tool) %in% available_tables) {
+      paste0("performance_history_", active_tool)
+    } else if ("performance_history_jmeter" %in% available_tables) {
+      "performance_history_jmeter"
+    } else {
+      "performance_history"
+    }
 
-    if (target_table %in% dbListTables(con)) {
-      writeLines(sprintf("\n--------------- Recent %s Runs in Vault --------------", toupper(active_tool)))
+    if (target_table %in% available_tables) {
+      header_title <- if (target_table == "performance_history") "Recent Runs in Vault" else sprintf("Recent %s Runs in Vault", toupper(active_tool))
+      writeLines(sprintf("\n--------------- %s --------------", header_title))
       menu_query <- sprintf("
         SELECT sequence_num, run_id, project_name, MAX(test_name) as test_name, MIN(upload_time) as upload_time
         FROM %s
@@ -227,19 +237,55 @@ if (opMode == "menu") {
 if (opMode == "register") {
   message(">>> [STITCHING] Processing folder: ", rawResultsFolder)
 
-  target_table <- paste0("performance_history_", active_tool)
-  mapping      <- params_cfg$tool_mappings[[active_tool]]
-  mapping      <- mapping[mapping != ""]
-  source_cols  <- as.character(unlist(mapping))
+  target_table <- "performance_history"
+  tool_key     <- if (active_tool %in% names(params_cfg$tool_mappings)) active_tool else "jmeter"
+  mapping      <- params_cfg$tool_mappings[[tool_key]]
+  mapping      <- mapping[nzchar(as.character(mapping))]
 
   if (!dir.exists(dirname(db_path))) dir.create(dirname(db_path), recursive = TRUE)
   con <- dbConnect(duckdb(), dbdir = db_path, read_only = FALSE)
+  available_tables <- dbListTables(con)
 
-  table_exists_query <- sprintf(
-    "SELECT count(*) as count FROM information_schema.tables WHERE table_name = '%s'",
-    target_table
-  )
-  table_exists <- dbGetQuery(con, table_exists_query)$count
+  # Auto-migrate if performance_history doesn't exist yet but legacy tables do
+  if (!(target_table %in% available_tables)) {
+    if ("performance_history_jmeter" %in% available_tables) {
+      message(">>> [MIGRATE] Creating unified 'performance_history' from 'performance_history_jmeter'...")
+      dbExecute(con, "
+        CREATE TABLE performance_history AS 
+        SELECT 
+          CAST(sequence_num AS DOUBLE) AS sequence_num,
+          CAST(run_id AS VARCHAR) AS run_id,
+          CAST(project_name AS VARCHAR) AS project_name,
+          CAST(test_name AS VARCHAR) AS test_name,
+          CAST(app_name AS VARCHAR) AS app_name,
+          CAST(csv_filename AS VARCHAR) AS csv_filename,
+          timestamp,
+          CAST(elapsed AS DOUBLE) AS elapsed,
+          CAST(label AS VARCHAR) AS label,
+          CAST(responseCode AS DOUBLE) AS responseCode,
+          CAST(responseMessage AS VARCHAR) AS responseMessage,
+          CAST(threadName AS VARCHAR) AS threadName,
+          CAST(dataType AS VARCHAR) AS dataType,
+          CAST(success AS BOOLEAN) AS success,
+          CAST(CAST(failureMessage AS VARCHAR) AS VARCHAR) AS failureMessage,
+          CAST(bytes AS DOUBLE) AS bytes,
+          CAST(sentBytes AS DOUBLE) AS sentBytes,
+          CAST(grpThreads AS DOUBLE) AS grpThreads,
+          CAST(allThreads AS DOUBLE) AS allThreads,
+          CAST(URL AS VARCHAR) AS URL,
+          CAST(Latency AS DOUBLE) AS Latency,
+          CAST(IdleTime AS DOUBLE) AS IdleTime,
+          CAST(Connect AS DOUBLE) AS Connect,
+          upload_time,
+          CAST(thread_group AS VARCHAR) AS thread_group,
+          CAST(user_index AS INTEGER) AS user_index
+        FROM performance_history_jmeter
+      ")
+      available_tables <- dbListTables(con)
+    }
+  }
+
+  table_exists <- if (target_table %in% dbListTables(con)) 1 else 0
 
   # ── Validate folder exists ──
   if (!dir.exists(rawResultsFolder)) {
@@ -322,58 +368,155 @@ if (opMode == "register") {
   # ── Stitch CSVs ──
   message(">>> [REGISTERING] Target: ", run_id, " | Table: ", target_table)
 
-  stitched_data <- vroom(
+  sample_header <- names(vroom::vroom(csv_files[1], n_max = 0, show_col_types = FALSE))
+  source_cols   <- intersect(as.character(unlist(mapping)), sample_header)
+
+  stitched_data <- vroom::vroom(
     csv_files,
     id           = "csv_filename",
-    col_select   = all_of(source_cols),
+    col_select   = any_of(source_cols),
+    show_col_types = FALSE,
     .name_repair = "minimal"
   )
 
-  # Rename headers to match tool layout
+  # Rename headers to match canonical JMeter fields
   for (field_name in names(mapping)) {
     old_name <- mapping[[field_name]]
-    if (old_name %in% names(stitched_data)) {
+    if (old_name %in% names(stitched_data) && old_name != field_name) {
       stitched_data <- stitched_data %>% rename(!!field_name := all_of(old_name))
     }
   }
 
+  # 1. Timestamp Normalization (POSIXct UTC)
+  ts_raw <- stitched_data$timestamp
+  if (is.numeric(ts_raw) || all(grepl("^\\d+(\\.\\d+)?$", head(na.omit(as.character(ts_raw)), 100)))) {
+    num_ts <- as.numeric(ts_raw)
+    stitched_data$timestamp <- if (any(num_ts > 1e11, na.rm = TRUE)) {
+      as.POSIXct(num_ts / 1000, origin = "1970-01-01", tz = "UTC")
+    } else {
+      as.POSIXct(num_ts, origin = "1970-01-01", tz = "UTC")
+    }
+  } else {
+    stitched_data$timestamp <- lubridate::parse_date_time(
+      as.character(ts_raw),
+      orders = c("ymd HMS", "ymd HM", "ymd_HMS", "Y-m-d'T'H:M:S", "Y-m-d'T'H:M:OS", "Y-m-d H:M:S", "Y-m-d H:M:OS", "d/m/Y H:M:S"),
+      tz = "UTC"
+    )
+    if (all(is.na(stitched_data$timestamp))) {
+      stitched_data$timestamp <- as.POSIXct(as.character(ts_raw), tz = "UTC")
+    }
+  }
+
+  # 2. Success Normalization (boolean)
+  if ("success" %in% names(stitched_data)) {
+    succ_str <- tolower(trimws(as.character(stitched_data$success)))
+    stitched_data$success <- succ_str %in% c("true", "yes", "1", "pass", "ok")
+  } else {
+    stitched_data$success <- TRUE
+  }
+
+  # 3. Response Code & Message
+  if (!("responseCode" %in% names(stitched_data)) || all(is.na(stitched_data$responseCode))) {
+    stitched_data$responseCode <- ifelse(stitched_data$success, 200, 500)
+  } else {
+    stitched_data$responseCode <- as.numeric(gsub("\\.0$", "", as.character(stitched_data$responseCode)))
+  }
+
+  if (!("responseMessage" %in% names(stitched_data)) || all(is.na(stitched_data$responseMessage))) {
+    stitched_data$responseMessage <- ifelse(stitched_data$success, "OK", "KO")
+  } else {
+    stitched_data$responseMessage <- as.character(stitched_data$responseMessage)
+  }
+
+  # 4. Thread Group & Thread Name Normalization
+  has_userPath   <- "userPath" %in% names(stitched_data)
+  has_tg         <- "thread_group" %in% names(stitched_data)
   has_threadName <- "threadName" %in% names(stitched_data)
-  has_userPath   <- "userPath"   %in% names(stitched_data)
 
-  stitched_data <- stitched_data %>%
-    mutate(
-      sequence_num = sequence_num,
-      run_id       = run_id,
-      project_name = project_name,
-      test_name    = test_name,
-      csv_filename = basename(csv_filename),
-      app_name     = unname(file_app_map[csv_filename]),  # Dynamically resolved per file
-      upload_time  = Sys.time(),
+  thread_group_val <- if (has_tg && any(!is.na(stitched_data$thread_group))) {
+    stitched_data$thread_group
+  } else if (has_threadName && any(grepl("\\s\\d+-\\d+", stitched_data$threadName))) {
+    extracted <- stringr::str_extract(stitched_data$threadName, "^.*(?=\\s\\d+-\\d+)")
+    ifelse(is.na(extracted), stitched_data$threadName, extracted)
+  } else if (has_userPath) {
+    stringr::str_trim(as.character(stitched_data$userPath))
+  } else {
+    "Thread Group"
+  }
+  stitched_data$thread_group <- thread_group_val
 
-      timestamp = if (active_tool == "jmeter") {
-        as.POSIXct(as.numeric(timestamp) / 1000, origin = "1970-01-01", tz = "UTC")
-      } else {
-        as.POSIXct(timestamp, format = "%Y-%m-%dT%H:%M:%OS", tz = "UTC")
-      },
+  if (!has_threadName || all(is.na(stitched_data$threadName))) {
+    stitched_data$threadName <- paste(stitched_data$thread_group, "1-1")
+  } else {
+    is_bare_id <- !grepl("\\s", stitched_data$threadName)
+    stitched_data$threadName <- ifelse(
+      is_bare_id,
+      paste0(stitched_data$thread_group, " ", stitched_data$threadName),
+      stitched_data$threadName
+    )
+  }
 
-      thread_group = if (active_tool == "jmeter" && has_threadName) {
-        extracted <- stringr::str_extract(threadName, "^.*(?=\\s\\d+-\\d+)")
-        ifelse(is.na(extracted), threadName, extracted)
-      } else if (active_tool == "neoload" && has_userPath) {
-        stringr::str_trim(userPath)
-      } else {
-        "N/A"
-      },
+  # Extract user_index
+  stitched_data$user_index <- as.integer(stringr::str_extract(stitched_data$threadName, "(?<=-)\\d+$"))
+  if (all(is.na(stitched_data$user_index))) {
+    stitched_data$user_index <- as.integer(stringr::str_extract(stitched_data$threadName, "\\d+$"))
+  }
 
-      user_index = if (active_tool == "jmeter" && has_threadName) {
-        as.integer(stringr::str_extract(threadName, "(?<=-)\\d+$"))
-      } else if (active_tool == "neoload" && has_threadName) {
-        as.integer(stringr::str_extract(threadName, "(?<=-)\\d+$"))
-      } else {
-        NA_integer_
-      }
-    ) %>%
-    relocate(sequence_num, run_id, project_name, test_name, app_name, csv_filename, .before = everything())
+  # 5. Fill and Cast Remaining Canonical JMeter Fields
+  if (!("elapsed" %in% names(stitched_data))) stitched_data$elapsed <- 0
+  stitched_data$elapsed <- as.numeric(stitched_data$elapsed)
+
+  if (!("label" %in% names(stitched_data))) stitched_data$label <- "Unknown"
+  stitched_data$label <- as.character(stitched_data$label)
+
+  if (!("dataType" %in% names(stitched_data))) stitched_data$dataType <- "text"
+  stitched_data$dataType <- as.character(stitched_data$dataType)
+
+  if (!("failureMessage" %in% names(stitched_data))) stitched_data$failureMessage <- NA_character_
+  stitched_data$failureMessage <- as.character(stitched_data$failureMessage)
+
+  if (!("bytes" %in% names(stitched_data))) stitched_data$bytes <- 0
+  stitched_data$bytes <- as.numeric(stitched_data$bytes)
+
+  if (!("sentBytes" %in% names(stitched_data))) stitched_data$sentBytes <- 0
+  stitched_data$sentBytes <- as.numeric(stitched_data$sentBytes)
+
+  if (!("grpThreads" %in% names(stitched_data))) stitched_data$grpThreads <- NA_real_
+  stitched_data$grpThreads <- as.numeric(stitched_data$grpThreads)
+
+  if (!("allThreads" %in% names(stitched_data))) stitched_data$allThreads <- NA_real_
+  stitched_data$allThreads <- as.numeric(stitched_data$allThreads)
+
+  if (!("URL" %in% names(stitched_data))) stitched_data$URL <- NA_character_
+  stitched_data$URL <- as.character(stitched_data$URL)
+
+  if (!("Latency" %in% names(stitched_data))) stitched_data$Latency <- stitched_data$elapsed
+  stitched_data$Latency <- as.numeric(stitched_data$Latency)
+
+  if (!("IdleTime" %in% names(stitched_data))) stitched_data$IdleTime <- 0
+  stitched_data$IdleTime <- as.numeric(stitched_data$IdleTime)
+
+  if (!("Connect" %in% names(stitched_data))) stitched_data$Connect <- 0
+  stitched_data$Connect <- as.numeric(stitched_data$Connect)
+
+  # Standard Metadata Columns
+  stitched_data$sequence_num <- sequence_num
+  stitched_data$run_id       <- run_id
+  stitched_data$project_name <- project_name
+  stitched_data$test_name    <- test_name
+  stitched_data$csv_filename <- basename(stitched_data$csv_filename)
+  stitched_data$app_name     <- unname(file_app_map[stitched_data$csv_filename])
+  stitched_data$upload_time  <- Sys.time()
+
+  canonical_cols <- c(
+    "sequence_num", "run_id", "project_name", "test_name", "app_name", "csv_filename",
+    "timestamp", "elapsed", "label", "responseCode", "responseMessage", "threadName",
+    "dataType", "success", "failureMessage", "bytes", "sentBytes", "grpThreads",
+    "allThreads", "URL", "Latency", "IdleTime", "Connect", "upload_time",
+    "thread_group", "user_index"
+  )
+
+  stitched_data <- stitched_data %>% select(all_of(canonical_cols))
 
   dbWriteTable(con, target_table, stitched_data, append = TRUE)
   dbExecute(con, "CHECKPOINT;")
@@ -393,7 +536,17 @@ if (opMode == "report") {
     stop("Error: A Current Run ID or Sequence Number is required (--current=<run>).")
   }
 
-  target_table <- paste0("performance_history_", active_tool)
+  con              <- dbConnect(duckdb(), dbdir = db_path, read_only = TRUE)
+  available_tables <- dbListTables(con)
+  target_table     <- if ("performance_history" %in% available_tables) {
+    "performance_history"
+  } else if (paste0("performance_history_", active_tool) %in% available_tables) {
+    paste0("performance_history_", active_tool)
+  } else if ("performance_history_jmeter" %in% available_tables) {
+    "performance_history_jmeter"
+  } else {
+    "performance_history"
+  }
 
   resolve_id <- function(identifier, id_df) {
     if (identifier == "NONE" || is.na(identifier) || !nzchar(trimws(identifier))) return("NONE")
@@ -407,17 +560,14 @@ if (opMode == "report") {
   resolved_current <- raw_current
   resolved_base    <- raw_base
 
-  if (file.exists(db_path)) {
-    con <- dbConnect(duckdb(), dbdir = db_path, read_only = TRUE)
-    if (target_table %in% dbListTables(con)) {
-      all_identifiers <- dbGetQuery(con, sprintf(
-        "SELECT DISTINCT run_id, sequence_num FROM %s", target_table
-      ))
-      resolved_current <- resolve_id(raw_current, all_identifiers)
-      resolved_base    <- resolve_id(raw_base, all_identifiers)
-    }
-    dbDisconnect(con, shutdown = TRUE)
+  if (target_table %in% available_tables) {
+    all_identifiers <- dbGetQuery(con, sprintf(
+      "SELECT DISTINCT run_id, sequence_num FROM %s", target_table
+    ))
+    resolved_current <- resolve_id(raw_current, all_identifiers)
+    resolved_base    <- resolve_id(raw_base, all_identifiers)
   }
+  dbDisconnect(con, shutdown = TRUE)
 
   has_baseline <- (resolved_base != "NONE" && resolved_base != resolved_current)
 

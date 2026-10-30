@@ -1,9 +1,6 @@
 # APER Delta — Complete Usage Guide
 
-APER Delta turns raw **JMeter** or **NeoLoad** CSV results into a single self-contained
-interactive HTML executive report comparing **two test runs (Current vs Base)** or evaluating
-a single run standalone — with an executive narrative summary, 2x2 KPI metrics, SLA pass/fail
-evaluation, application health matrix, failure drilldown tables, and interactive modals.
+APER Delta standardises on **Apache JMeter as its single canonical data schema and calculation engine**. It transforms raw performance test results from **JMeter**, **NeoLoad**, or other load testing tools into a unified DuckDB vault and generates a self-contained interactive HTML executive report comparing **two test runs (Current vs Base)** or evaluating a single run standalone. The report provides an executive narrative summary, 2x2 KPI metrics, dynamic workload phase profiling (ramp-up, steady state, ramp-down), multi-application baseline comparisons, SLA evaluation, failure drilldown tables, and zero-lag interactive modals.
 
 You do not need to know R. Everything is driven by an interactive menu
 (`launch.ps1` on Windows, `launch.sh` on Linux/macOS; legacy `frontdoor.ps1`/`frontdoor.sh` supported) which calls the R engine
@@ -45,8 +42,10 @@ launch.ps1 / launch.sh            interactive menu — locates Rscript, asks que
         │                         resolves the vault & output paths (local, absolute or UNC)
         │                         auto-detects Quarto CLI / Pandoc
         │
-        ├── register ──► <database_path>                (DuckDB "vault")
-        └── report   ──► .engine/dashboard.qmd / .Rmd   (Master template)
+        ├── register ──► <database_path>                (DuckDB "vault": performance_history)
+        │                Normalises columns into canonical JMeter schema
+        │
+        └── report   ──► .engine/dashboard.qmd / .Rmd   (Unified JMeter calculation engine)
                               ├── .engine/Dashboard/*.Rmd   High-density executive dashboard
                               ├── .engine/Tables/*.Rmd      Aggregates & failure tables
                               ├── .engine/Charts/*.Rmd      Responsive SVG & Plotly charts
@@ -64,8 +63,8 @@ Two distinct phases:
 
 | Phase | What it does | Repeatable? |
 |---|---|---|
-| **Register** | Reads every CSV in a folder, normalises columns per tool, appends rows to the DuckDB vault under one **Run ID** | Once per Run ID (duplicates are rejected) |
-| **Report** | Reads 1–2 registered runs back out of the vault (Current and optional Base) and renders the HTML dashboard | As often as you like |
+| **Register** | Reads every CSV in a folder, normalises columns into the canonical JMeter layout, and appends rows to the unified `performance_history` table under one **Run ID** | Once per Run ID (duplicates are rejected) |
+| **Report** | Reads 1–2 registered runs back out of the vault (Current and optional Base) through a single unified calculation engine and renders the HTML dashboard | As often as you like |
 
 Data is **only** read from the vault at report time — the original CSVs are not needed again
 once registered.
@@ -299,8 +298,9 @@ path from the root.
 | `ai_summary_enabled` | `"true"` / `"false"` | Toggles Amplify AI generation (with automatic deterministic fallback) |
 | `ai_url`, `ai_model_id` | Amplify completion endpoint & model | Change only if your team uses a custom model/endpoint |
 | `label_exclusions` | List of labels excluded globally | Pacing samplers, think time, or debug samplers excluded before analysis |
-| `tool_type` | Default engine | System default (`jmeter` / `neoload`) — launcher overrides it per run |
-| `tool_mappings.jmeter` / `.neoload` | Source-CSV column → internal field mapping | Edit **only** if your export uses different headers |
+| `tool_type` | Canonical engine | Always `"jmeter"` (canonical schema & calculation engine) |
+| `tool_mappings.jmeter` / `.neoload` | Source-CSV column → canonical JMeter mapping | Maps external tool CSV headers to canonical JMeter columns at ingestion |
+| `workload_profile.ramp_up` / `.steady_state` / `.ramp_down` | Workload phase overrides | Optional manual overrides; leave `""` to calculate dynamically from telemetry |
 | `bin_size` | Time-bucket size in seconds for per-minute charts | Default `60` |
 | `user_action_filter` | Regex of transactions to include | Default `.*` (all) |
 
@@ -340,29 +340,25 @@ duplicate-Run-ID protection and run history are then shared. Caveats:
 
 Report output precedence is `--outputFolder` → `output_dir` in `config.yaml` → `Reports/`.
 
-### Column mappings — what your CSV must contain
+### Column mappings — canonical JMeter schema normalization
 
-The registration step selects exactly the source columns listed under the active tool's
-mapping, so those headers must exist in your CSV (blank entries are ignored).
+APER Delta standardises on **Apache JMeter as the single canonical schema** across the entire pipeline. The registration step selects the source columns declared under the tool's mapping in `config.yaml` and normalises them into standard JMeter columns before writing to the unified `performance_history` table:
 
-| Internal field | JMeter header | NeoLoad header |
-|---|---|---|
-| `timestamp` | `timeStamp` (epoch ms) | `Time` (`YYYY-MM-DDTHH:MM:SS`) |
-| `elapsed` | `elapsed` | `Response time` |
-| `label` | `label` | `Element` |
-| `success` | `success` | `Success` |
-| `threadName` | `threadName` | `Virtual User ID` |
-| `responseCode` / `responseMessage` | `responseCode` / `responseMessage` | *(not available — report shows `N/A`)* |
-| `userPath` / `population` | *(n/a)* | `User Path` / `Population` |
-| others | `bytes`, `sentBytes`, `grpThreads`, `allThreads`, `URL`, `Latency`, `IdleTime`, `Connect`, `dataType`, `failureMessage` | — |
+| Canonical JMeter Field | JMeter Source Header | NeoLoad Source Header | Normalization Behavior |
+|---|---|---|---|
+| `timestamp` | `timeStamp` (epoch ms) | `Time` / `Date` | Auto-detects epoch ms, epoch seconds, or ISO-8601 text (`YYYY-MM-DDTHH:MM:SS`) and stores as UTC `TIMESTAMP` |
+| `elapsed` | `elapsed` | `Response time` / `Duration` | Numeric response duration in milliseconds |
+| `label` | `label` | `Element` / `User Path Element` | Transaction or sampler name |
+| `success` | `success` | `Success` | Normalised to boolean (`TRUE` / `FALSE`) |
+| `responseCode` | `responseCode` | *(synthesised)* | Numeric HTTP code (`200` on success, `500` or error code on failure) |
+| `responseMessage` | `responseMessage` | *(synthesised)* | Text status message (`OK` on success, failure description on error) |
+| `thread_group` | *(derived)* | `User Path` | JMeter thread group name (extracted from `threadName`) or NeoLoad `User Path` |
+| `threadName` | `threadName` | `Virtual User ID` | Standardised format: `<ThreadGroup> <VirtualUserID>` |
+| `user_index` | *(derived)* | *(derived)* | Integer index of the virtual user for concurrency calculation |
+| `allThreads` / `grpThreads` | `allThreads` / `grpThreads` | *(synthesised)* | Instantaneous thread count; used alongside distinct thread calculations |
+| `dataType`, `bytes`, `sentBytes`, `Latency`, `Connect`, `IdleTime` | Native columns | *(defaults/elapsed)* | Populated with standard defaults if omitted by external tools |
 
-If your NeoLoad export names the duration column `Duration`, or the label column
-`User Path Element`, update the mapping accordingly — otherwise registration fails with a
-`vroom` “column not found” error.
-
-Derived at registration time: `thread_group` (JMeter: `threadName` with the trailing
-`" <n>-<n>"` stripped; NeoLoad: trimmed `User Path`) and `user_index` (the numeric suffix of
-`threadName`, used for virtual-user counts).
+Because all tools are transformed into the canonical JMeter layout at registration, downstream reporting, SQL queries, SLA evaluations, and executive charts operate on one single unified data model without tool-specific conditional branches.
 
 ---
 
@@ -415,35 +411,36 @@ The engine stitches the CSVs with `vroom`, renames the columns per the mapping, 
 `thread_group` / `user_index`, and an auto-incrementing **`sequence_num`** (1, 2, 3 …) so you
 can later refer to a run by a short number instead of the full Run ID.
 
-Rows land in `performance_history_jmeter` or `performance_history_neoload` — the two tool types
-are stored separately and **cannot be compared against each other in one report**.
+Rows land in the unified **`performance_history`** table in DuckDB. Because all incoming test data is normalized into the canonical JMeter schema at ingestion, any registered runs across the vault can be reported on or compared directly against one another.
 
 Successful output looks like:
 
 ```
 >>> [REGISTER] project=ProjectXYZ | test=Sanity | unique apps=2 | run_id=123456
 >>> [REGISTER] sequence_num=3
->>> [SUCCESS] Registered as Run ID '123456' (Sequence #3) in performance_history_jmeter
+>>> [SUCCESS] Registered as Run ID '123456' (Sequence #3) in performance_history
 ```
 
 ---
 
 ## 9. Generating a report
 
-1. Launch the front door → **1. Generate Report** (or just press Enter).
-2. Choose the tool type — the same one the runs were registered under.
-3. The engine prints the 10 most recent runs for that tool:
+1. Launch the launcher (`launch.ps1` or `launch.sh`) → choose **1. Generate Report** (or just press Enter).
+2. The engine prints the 10 most recent runs across the vault from `performance_history`:
 
    ```
-   --------------- Recent JMETER Runs in Vault --------------
-   [#3] Run ID: 123456 | Project: ProjectXYZ | Test: Sanity | Registered: 2026-08-09 10:31:02
-   [#2] Run ID: 123455 | Project: ProjectXYZ | Test: Sanity | Registered: 2026-08-02 09:12:44
+   --------------- Recent Runs in Vault --------------
+   [#4] Run ID: 1338-MarinaSands | Project: MSD | Test: Sociability | Registered: 2026-10-20 01:12:10
+   [#3] Run ID: 750-Tarawera     | Project: MSD | Test: Sociability | Registered: 2026-10-20 01:11:33
+   [#2] Run ID: 10003            | Project: ECAN | Test: PeakLoad   | Registered: 2026-10-28 19:45:09
+   [#1] Run ID: 10001            | Project: ECAN | Test: PeakLoad   | Registered: 2026-10-28 19:43:19
+   -----------------------------------------------------------
    ```
 
-4. Enter the two run inputs — either the **Run ID** (e.g. `123456`) or the **Sequence #** (e.g. `3`):
+3. Enter the two run inputs — either the **Run ID** (e.g. `10003`) or the **Sequence #** (e.g. `2`):
    - **1. Current Run ID / Sequence # (Required):** The active performance test run under evaluation.
    - **2. Baseline Run ID / Sequence # (Optional):** The reference benchmark run to compare against. Press Enter to generate a standalone single-run report.
-5. Optionally enter a **transaction label filter** — one or more comma-separated keywords.
+4. Optionally enter a **transaction label filter** — one or more comma-separated keywords.
    Each keyword is a *contains* match (case-sensitive, not a regex) and the keywords are
    OR-ed together, so `Login, Checkout` keeps every transaction whose label contains either
    word (`User_Login_Flow`, `Guest_Checkout`, …). Leave blank for all.
@@ -456,7 +453,7 @@ Successful output looks like:
 Output (in `output_dir`, `Reports/` by default):
 
 ```
-Performance_Report_123455_vs_123456_20260809_1435.html
+Performance_Report_10001_vs_10003_20261029_1710.html
 ```
 
 Single-run reports are named `Performance_Report_<runId>_<timestamp>.html`. The file is
@@ -466,23 +463,27 @@ fully self-contained — email it, archive it, open it in any browser, no server
 
 ## 10. Command-line (non-interactive) usage
 
-Handy for CI pipelines. Run these **from the project root**.
+Handy for CI/CD pipelines. Run these **from the project root**.
 
 ```bash
-# List recent runs (what the menu prints)
-Rscript .engine/engine.R --opMode=menu --active_tool=jmeter
+# List recent runs across the vault
+Rscript .engine/engine.R --opMode=menu
 
-# Register a folder of CSVs
+# Register a folder of CSVs (specify active_tool to select column mapping from config.yaml)
 Rscript .engine/engine.R --opMode=register \
         --rawResultsFolder="/full/path/to/build-042" --active_tool=jmeter
 
-# Compare Current run vs Baseline run, filtering to transactions containing "TRX"
+# Register NeoLoad CSVs (automatically normalises into canonical JMeter schema)
+Rscript .engine/engine.R --opMode=register \
+        --rawResultsFolder="/full/path/to/neoload-build" --active_tool=neoload
+
+# Compare Current run vs Baseline run (tool-agnostic execution)
 Rscript .engine/engine.R --opMode=report \
-        --current=2 --base=1 --active_tool=jmeter --labelFilterParam="TRX"
+        --current=2 --base=1 --labelFilterParam="TRX"
 
 # Standalone single-run report into a custom output folder
 Rscript .engine/engine.R --opMode=report --current=123456 \
-        --active_tool=neoload --outputFolder="/mnt/share/perf-reports"
+        --outputFolder="/mnt/share/perf-reports"
 ```
 
 | Flag | Default | Meaning |
@@ -492,7 +493,7 @@ Rscript .engine/engine.R --opMode=report --current=123456 \
 | `--current` | `NONE` | Current candidate Run ID or sequence number (Required for report mode) |
 | `--base` (or `--baseline`) | `NONE` | Baseline benchmark Run ID or sequence number (Optional for standalone) |
 | `--comp1` / `--comp2` | `NONE` | Legacy aliases: `--comp1` (base) and `--comp2` (current) |
-| `--active_tool` | `jmeter` | `jmeter` or `neoload` (selects the vault table) |
+| `--active_tool` | `jmeter` | In `register` mode, selects the mapping block in `config.yaml` (`jmeter` / `neoload`). Optional for `report` mode. |
 | `--outputFolder` | `NONE` → `output_dir` from `config.yaml` → `Reports/` | Output directory; local, absolute or UNC, created if missing |
 | `--labelFilterParam` | `NONE` | Comma-separated contains-match keywords, OR-ed together |
 
@@ -500,7 +501,7 @@ Windows equivalents use the same flags (`engine.R` or `worker.R` wrapper):
 
 ```powershell
 & "C:\Program Files\R\R-4.6.0\bin\x64\Rscript.exe" --vanilla .engine\engine.R `
-  "--opMode=report" "--current=2" "--base=1" "--active_tool=jmeter" "--labelFilterParam=NONE"
+  "--opMode=report" "--current=2" "--base=1" "--labelFilterParam=NONE"
 ```
 
 Exit codes: `0` on success, `1` when registration is rejected (no CSVs found, duplicate Run ID).
@@ -535,7 +536,7 @@ APER Delta v2.0 renders a **single-viewport (100vh) High-Density Executive Perfo
 ### Zone 1: Executive Assessment & 2x2 KPI Strip
 - **Consolidated Top Status Bar** — Overall PASS/FAIL release gate verdict, Run IDs, start/end timestamps, test duration, peak concurrency, and optional `🖥 Infrastructure 🔍` button.
 - **Executive Summary Callout (2-Column)**:
-  - **Left (Narrative Synthesis)**: Paragraph 1 covers workload profile (duration, ramp-up, steady state, max concurrent users, throughput, error rate, and baseline P95 latency improvement/regression). Paragraph 2 details SLA release criteria compliance, breach counts, worst-performing transaction vs SLA threshold, and impacted flow clusters.
+  - **Left (Narrative Synthesis)**: Paragraph 1 covers workload profile (duration, dynamically calculated ramp-up and steady state, max concurrent users, throughput, error rate, and baseline P95 latency improvement/regression). Workload phases are calculated dynamically from test telemetry and active thread boundaries across all application workloads. Paragraph 2 details SLA release criteria compliance, breach counts, worst-performing transaction vs SLA threshold, and impacted flow clusters.
   - **Right (📋 Next Steps)**: Dedicated action plan box with 3 targeted performance engineering recommendations (steady-state scoping validation, APM/server log triage for top bottlenecks, and re-test verification).
 - **2x2 KPI Strip**:
   - `Max Virtual Users`: achieved concurrency vs target threshold.
@@ -736,8 +737,8 @@ Notes:
 | `CSV files in the folder have different BuildIds` | Split them into one folder per build and register separately |
 | `Run ID 'X' already exists` | That build is already registered — report on it, or remove it with `delete_by_runid.R` |
 | `[ERROR] No CSV files found in: …` | Wrong path, or the files are in a sub-folder (the scan is not recursive) |
-| `Run(s) not found (checked both run_id and sequence_num)` | Typo, or you picked the wrong tool type — JMeter and NeoLoad live in separate tables |
-| `Table 'performance_history_neoload' does not exist` | Nothing registered yet for that tool type |
+| `Run(s) not found (checked both run_id and sequence_num)` | Typo in Run ID/sequence number, or the run has not been registered yet |
+| `Table 'performance_history' does not exist` | No test data has been registered into the vault yet |
 | `column not found` during registration | Your export headers differ from `tool_mappings` — update `config.yaml` (§6) |
 | `No transactions matched query criteria` | The label filter excluded everything (matching is case-sensitive). Re-run with fewer keywords or an empty filter |
 | `cannot create dir '//<host>/shared/...'` / vault not found on a share | `config.yaml` still has the `//<host>/...` placeholders, or the share is unreachable / not permitted. Check the `[DB]` and `[REPORT]` path lines printed at startup (§6) |
@@ -756,7 +757,7 @@ Notes:
 | Install prerequisites | R 4.6.0 (§2) + latest Pandoc (§3) / Quarto CLI |
 | Start the tool | `launch.ps1` (Windows) / `./launch.sh` (Linux/macOS), from the project root |
 | Register results | Menu → **2** → tool type → full folder path |
-| Generate a report | Menu → **1** (or Enter) → tool type → Current Run ID & Baseline Run ID → optional filter |
+| `Generate a report` | Menu → **1** (or Enter) → Current Run ID & Baseline Run ID → optional filter |
 | Compare runs | Pass `--current=<run>` and `--base=<run>` (or enter both at interactive prompt) |
 | Filter transactions | Type one or more comma-separated substrings at the filter prompt (`Login, Checkout`) |
 | Filter by application | Click application pill buttons (`All`, `App1`, `App2`) in Scenario Breakdown or Charts Modal |

@@ -110,7 +110,7 @@ if (!exists("rt_sla_enabled"))  rt_sla_enabled  <- TRUE
 any_sla_enabled <- isTRUE(vu_sla_enabled) || isTRUE(tps_sla_enabled) || isTRUE(er_sla_enabled) || isTRUE(rt_sla_enabled)
 
 status_colour <- function(status, enabled = TRUE) {
-  if (!isTRUE(enabled) || !isTRUE(show_overall_status) || identical(status, "INFO")) return("#2563EB")
+  if (!isTRUE(enabled) || !isTRUE(show_overall_status) || identical(status, "INFO")) return("#0A0A0A")
   if (identical(status, "PASS")) return("#16A34A")
   if (identical(status, "FAIL")) return("#DC2626")
   "#64748B"
@@ -128,41 +128,66 @@ metric_badge <- function(value, passed, suffix = "", enabled = TRUE) {
   )
 }
 
-inline_delta_badge <- function(current_val, baseline_val, lower_is_better = FALSE) {
+inline_delta_badge <- function(current_val, baseline_val, lower_is_better = FALSE, digits = 1) {
   if (!has_baseline || is.na(current_val) || is.na(baseline_val)) return("")
+  fmt_str <- sprintf("%%s%%.%df%%%%", digits)
   if (baseline_val == 0) {
-    if (current_val == 0) return("<span class='hd-delta-inline hd-delta-neutral'>▬ 0.0%</span>")
+    if (current_val == 0) {
+      zero_str <- sprintf(fmt_str, "", 0)
+      return(sprintf("<span class='hd-delta-inline hd-delta-neutral'><span class='hd-delta-symbol'>▬</span><span class='hd-delta-num'>%s</span></span>", zero_str))
+    }
     cls <- if (lower_is_better) "hd-delta-fail" else "hd-delta-pass"
-    return(sprintf("<span class='hd-delta-inline %s'>▲ New</span>", cls))
+    return(sprintf("<span class='hd-delta-inline %s'><span class='hd-delta-symbol'>▲</span><span class='hd-delta-num'>New</span></span>", cls))
   }
-  delta <- round(((current_val - baseline_val) / baseline_val) * 100, 1)
+  delta <- round(((current_val - baseline_val) / baseline_val) * 100, digits)
   if (delta == 0) {
-    return("<span class='hd-delta-inline hd-delta-neutral'>▬ 0.0%</span>")
+    zero_str <- sprintf(fmt_str, "", 0)
+    return(sprintf("<span class='hd-delta-inline hd-delta-neutral'><span class='hd-delta-symbol'>▬</span><span class='hd-delta-num'>%s</span></span>", zero_str))
   }
   is_good <- if (lower_is_better) (delta < 0) else (delta > 0)
   cls     <- if (is_good) "hd-delta-pass" else "hd-delta-fail"
   arrow   <- if (delta > 0) "▲" else "▼"
   sign_ch <- if (delta > 0) "+" else "-"
-  sprintf("<span class='hd-delta-inline %s'>%s %s%.1f%%</span>", cls, arrow, sign_ch, abs(delta))
+  val_str <- sprintf(fmt_str, sign_ch, abs(delta))
+  sprintf("<span class='hd-delta-inline %s'><span class='hd-delta-symbol'>%s</span><span class='hd-delta-num'>%s</span></span>", cls, arrow, val_str)
 }
 
-delta_text <- function(current_val, baseline_val, lower_is_better = FALSE) {
-  if (is.na(current_val) || is.na(baseline_val)) return("—")
-  if (baseline_val == 0) {
-    if (current_val == 0) return("<span class='status-na'>▬ 0%</span>")
-    return("<span class='status-fail'>▲ Increase</span>")
+delta_text <- function(current_val, baseline_val, lower_is_better = FALSE, digits = 1) {
+  if (is.na(current_val) || is.na(baseline_val)) {
+    return("<span class='hd-delta-inline hd-delta-neutral'><span class='hd-delta-symbol'>—</span><span class='hd-delta-num'>—</span></span>")
   }
-  delta <- round(((current_val - baseline_val) / baseline_val) * 100, 1)
-  if (delta == 0) return("<span class='status-na'>▬ 0%</span>")
-  is_good <- if (lower_is_better) (delta < 0) else (delta > 0)
-  cls     <- if (is_good) "status-pass" else "status-fail"
-  arrow   <- if (delta > 0) "▲" else "▼"
-  sign_ch <- if (delta > 0) "+" else "-"
-  sprintf("<span class='%s'>%s %s%.1f%%</span>", cls, arrow, sign_ch, abs(delta))
+  inline_delta_badge(current_val, baseline_val, lower_is_better = lower_is_better, digits = digits)
 }
 
 safe_dom_id <- function(x) {
   gsub("^_+|_+$", "", gsub("[^A-Za-z0-9]+", "_", as.character(x)))
+}
+
+render_svg_icon <- function(name, size = 14, class = "hd-icon") {
+  paths <- list(
+    zap       = '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>',
+    clipboard = '<path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path><rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect><path d="m9 14 2 2 4-4"></path>',
+    matrix    = '<rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M3 9h18M3 15h18M9 3v18M15 3v18"></path>',
+    compass   = '<circle cx="12" cy="12" r="10"></circle><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"></polygon>',
+    timer     = '<circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline>',
+    flame     = '<path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"></path>',
+    alert     = '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line>',
+    scale     = '<path d="m16 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"></path><path d="m2 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"></path><path d="M7 21h10M12 3v18M3 7h2c2 0 5-1 7-2 2 1 5 2 7 2h2"></path>',
+    folder    = '<path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"></path>',
+    flask     = '<path d="M10 2v7.31L4.75 18.1a2 2 0 0 0 1.63 2.9h11.24a2 2 0 0 0 1.63-2.9L14 9.31V2"></path><path d="M8.5 2h7M14 9.3a6.5 6.5 0 1 1-4 0"></path>',
+    clock     = '<circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 14 10"></polyline>',
+    chart     = '<line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line><line x1="2" y1="20" x2="22" y2="20"></line>',
+    server    = '<rect width="20" height="8" x="2" y="2" rx="2" ry="2"></rect><rect width="20" height="8" x="2" y="14" rx="2" ry="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line>',
+    book      = '<path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1-2.5-2.5Z"></path><path d="M6 2v20"></path>',
+    search    = '<circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line>',
+    star      = '<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon>'
+  )
+  inner <- paths[[name]]
+  if (is.null(inner)) return("")
+  sprintf(
+    '<svg class="%s" width="%d" height="%d" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">%s</svg>',
+    class, size, size, inner
+  )
 }
 
 # ============================================================
@@ -271,7 +296,8 @@ cur_scen_map <- db_label_scen_map %>% filter(run_id == current_run_id)
 joined_labels_all <- tibble(
   app_name = character(), logical_scenario = character(), label = character(),
   actual_rt = numeric(), threshold = numeric(), passed = logical(),
-  breach_pct = numeric(), tx_count = integer(), errors = integer(), error_rate = numeric()
+  breach_pct = numeric(), tx_count = integer(), errors = integer(), error_rate = numeric(),
+  total_time_secs = numeric(), burden_pct = numeric()
 )
 
 logical_rt_summary <- tibble(
@@ -284,7 +310,7 @@ logical_rt_summary <- tibble(
 if (!is.null(rt_summary) && !is.null(rt_summary$all_labels) && nrow(rt_summary$all_labels) > 0) {
   joined_labels_all <- rt_summary$all_labels %>%
     inner_join(cur_scen_map, by = c("run_id", "label")) %>%
-    distinct(app_name, logical_scenario, label, actual_rt, threshold, passed, breach_pct, tx_count, errors, error_rate)
+    distinct(app_name, logical_scenario, label, actual_rt, threshold, passed, breach_pct, tx_count, errors, error_rate, total_time_secs, burden_pct)
 
   logical_rt_summary <- joined_labels_all %>%
     group_by(app_name, logical_scenario) %>%
@@ -337,10 +363,12 @@ base_apps <- db_app_summary %>%
   filter(run_id == baseline_run_id) %>%
   select(
     app_name,
-    base_tx         = transactions,
-    base_throughput = throughput,
-    base_pct_rt     = pct_rt,
-    base_error_rate = error_rate
+    base_tx                = transactions,
+    base_throughput        = throughput,
+    base_pct_rt            = pct_rt,
+    base_error_rate        = error_rate,
+    base_steady_throughput = steady_throughput,
+    base_steady_pct_rt     = steady_pct_rt
   )
 
 app_logical_scen_counts <- logical_health_df %>%
@@ -457,14 +485,26 @@ report_navbar_html <- sprintf(
 )
 
 slarules_btn_html <- if (isTRUE(any_sla_enabled)) {
-  '<label for="hd-mode-slarules" class="hd-modal-btn hd-topbar-btn" data-open-mode="slarules" data-open-tab="ALL" style="background:#FDF2F8;border-color:#FBCFE8;color:#9D174D;margin:0;">⚖️ SLA Criteria 🔍</label>'
+  sprintf('<label for="hd-mode-slarules" class="hd-modal-btn hd-topbar-btn" data-open-mode="slarules" data-open-tab="ALL" style="background:#FFFFFF;border-color:#CBD5E1;color:#0F172A;margin:0;">%s SLA Criteria %s</label>', render_svg_icon("scale", 13), render_svg_icon("search", 11))
 } else {
-  '<span class="hd-modal-btn hd-topbar-btn is-disabled" title="All SLA rules are disabled in performance-sla.yaml" style="margin:0;">⚖️ SLA Criteria 🔍</span>'
+  sprintf('<span class="hd-modal-btn hd-topbar-btn is-disabled" title="All SLA rules are disabled in performance-sla.yaml" style="margin:0;">%s SLA Criteria %s</span>', render_svg_icon("scale", 13), render_svg_icon("search", 11))
 }
 
 evidence_btn_html <- if (has_evidence) {
-  '<label for="hd-mode-evidence" class="hd-modal-btn hd-topbar-btn" data-open-mode="evidence" data-open-tab="ALL" style="background:#F0FDF4;border-color:#86EFAC;color:#166534;margin:0;">🖥 Infrastructure 🔍</label>'
+  sprintf('<label for="hd-mode-evidence" class="hd-modal-btn hd-topbar-btn" data-open-mode="evidence" data-open-tab="ALL" style="background:#FFFFFF;border-color:#CBD5E1;color:#0F172A;margin:0;">%s Infrastructure %s</label>', render_svg_icon("server", 13), render_svg_icon("search", 11))
 } else ""
+
+apps_tag_label <- if (length(applications) > 1) sprintf("Applications (%d)", length(applications)) else "Application"
+apps_chips_html <- if (length(applications) > 0) {
+  paste(
+    sapply(applications, function(app) {
+      sprintf('<span class="hd-apps-chip" title="%s">%s</span>', htmlEscape(app), htmlEscape(app))
+    }),
+    collapse = ""
+  )
+} else {
+  '<span class="hd-apps-chip">N/A</span>'
+}
 
 top_bar_html <- sprintf(
   '<div class="%s">
@@ -474,14 +514,14 @@ top_bar_html <- sprintf(
            <span class="hd-meta-tag">Test Details</span>
          </div>
          <div class="hd-meta-row">
-           <span class="hd-meta-item">🗀 <strong>Project:</strong> %s</span>
-           <span class="hd-meta-item">🧪 <strong>Test:</strong> %s</span>
+           <span class="hd-meta-item">%s <strong>Project:</strong> %s</span>
+           <span class="hd-meta-item">%s <strong>Test:</strong> %s</span>
          </div>
        </div>
        <div class="hd-meta-group hd-meta-group-stack">
          <div class="hd-meta-row">
-           <span class="hd-meta-tag" style="background:#DBEAFE;color:#1E40AF;">Current Run #%s</span>
-           <span class="hd-meta-item">⏱ <strong>%s</strong></span>
+           <span class="hd-meta-tag" style="background:#0A0A0A;color:#FFFFFF;border:1px solid #0A0A0A;">Current Run #%s</span>
+           <span class="hd-meta-item">%s <strong>%s</strong></span>
          </div>
          <div class="hd-meta-row">
            <span class="hd-meta-item hd-meta-ts">(%s – %s)</span>
@@ -490,38 +530,47 @@ top_bar_html <- sprintf(
        <div class="hd-meta-group hd-meta-group-stack">
          <div class="hd-meta-row">
            <span class="hd-meta-tag">Baseline Run #%s</span>
-           <span class="hd-meta-item">⏱ <strong>%s</strong></span>
+           <span class="hd-meta-item">%s <strong>%s</strong></span>
          </div>
          <div class="hd-meta-row">
            <span class="hd-meta-item hd-meta-ts">(%s – %s)</span>
          </div>
        </div>
+       <div class="hd-meta-group hd-meta-group-stack hd-meta-group-apps">
+         <div class="hd-meta-row">
+           <span class="hd-meta-tag">%s</span>
+         </div>
+         <div class="hd-meta-row hd-meta-apps-wrap">
+           %s
+           <div class="hd-apps-chip-container">%s</div>
+         </div>
+       </div>
        <div class="hd-topbar-actions">
-         <label for="hd-mode-charts" class="hd-modal-btn hd-topbar-btn" data-open-mode="charts" data-open-tab="GRID" style="background:#EFF6FF;border-color:#93C5FD;color:#1D4ED8;margin:0;">📈 Executive Charts 🔍</label>
+         <label for="hd-mode-charts" class="hd-modal-btn hd-topbar-btn" data-open-mode="charts" data-open-tab="GRID" style="background:#FFFFFF;border-color:#CBD5E1;color:#0F172A;margin:0;">%s Executive Charts %s</label>
          %s
-         <label for="hd-mode-glossary" class="hd-modal-btn hd-topbar-btn" data-open-mode="glossary" data-open-tab="ALL" style="background:#F0FDF4;border-color:#BBF7D0;color:#166534;margin:0;">📖 Performance Glossary 🔍</label>
+         <label for="hd-mode-glossary" class="hd-modal-btn hd-topbar-btn" data-open-mode="glossary" data-open-tab="ALL" style="background:#FFFFFF;border-color:#CBD5E1;color:#0F172A;margin:0;">%s Performance Glossary %s</label>
          %s
        </div>
      </div>
-     <div class="hd-topbar-apps-row">
-       <span class="hd-meta-item">🖥 <strong>Applications:</strong> %s</span>
-       <label for="hd-theme-toggle-state" id="hd-theme-toggle-btn" class="hd-theme-toggle-btn" title="Switch between Light and Dark theme" style="margin-left:auto;flex-shrink:0;"><span class="hd-theme-label-dark">🌙 Dark</span><span class="hd-theme-label-light">☀️ Light</span></label>
-     </div>
    </div>',
   topbar_class,
-  project_name,
-  scenario_name,
+  render_svg_icon("folder", 13), project_name,
+  render_svg_icon("flask", 13), scenario_name,
   current_run_id,
-  current_duration,
+  render_svg_icon("clock", 13), current_duration,
   current_start_fmt,
   current_end_fmt,
   baseline_run_id,
-  baseline_duration,
+  render_svg_icon("clock", 13), baseline_duration,
   baseline_start_fmt,
   baseline_end_fmt,
+  apps_tag_label,
+  render_svg_icon("server", 13),
+  apps_chips_html,
+  render_svg_icon("chart", 13), render_svg_icon("search", 11),
   slarules_btn_html,
-  evidence_btn_html,
-  application_list
+  render_svg_icon("book", 13), render_svg_icon("search", 11),
+  evidence_btn_html
 )
 
 # Run-over-run latency delta used by the executive narrative
@@ -602,50 +651,71 @@ auto_steady_m <- if ("steady_state_mins" %in% names(current_run) && !is.na(curre
 val_ramp_up <- if (nzchar(cfg_ramp_up)) {
   cfg_ramp_up
 } else if (auto_ramp_m <= 0) {
-  "immediate ramp-up (0s)"
+  "immediate ramp-up"
 } else {
-  sprintf("%d-minute ramp-up (%ds)", auto_ramp_m, auto_ramp_m * 60)
+  sprintf("%d min ramp-up", auto_ramp_m)
 }
 
 val_steady_state <- if (nzchar(cfg_steady)) {
   cfg_steady
 } else {
-  sprintf("%d minutes steady state", auto_steady_m)
+  sprintf("%d min steady state", auto_steady_m)
 }
 
 val_ramp_down <- if (nzchar(cfg_ramp_down)) {
   if (tolower(cfg_ramp_down) %in% c("none", "0", "0m", "0s")) "" else cfg_ramp_down
 } else if (auto_ramp_down_m > 0) {
-  sprintf("%d-minute ramp-down (%ds)", auto_ramp_down_m, auto_ramp_down_m * 60)
+  sprintf("%d min ramp-down", auto_ramp_down_m)
 } else {
   ""
 }
 
 duration_desc <- if (nzchar(val_ramp_down)) {
-  sprintf("a %s followed by %s and a %s ramp-down",
-          sub("^a\\s+", "", val_ramp_up),
-          val_steady_state,
-          sub("^a\\s+|\\s*ramp-down$", "", val_ramp_down))
+  sprintf("%s, %s, %s", val_ramp_up, val_steady_state, val_ramp_down)
 } else {
-  sprintf("a %s followed by %s",
-          sub("^a\\s+", "", val_ramp_up),
-          val_steady_state)
+  sprintf("%s, %s", val_ramp_up, val_steady_state)
 }
 
-current_rt_fmt <- format(round(current_run$pct_rt[1]), big.mark = ",")
+current_rt_fmt  <- format(round(current_run$pct_rt[1]), big.mark = ",")
+baseline_rt_fmt <- if (has_baseline && !is.null(baseline_run) && nrow(baseline_run) > 0 && !is.na(baseline_run$pct_rt[1])) {
+  format(round(baseline_run$pct_rt[1]), big.mark = ",")
+} else ""
+
 rt_comp_str <- if (has_baseline) {
-  if (rt_delta_pct < -1) {
-    sprintf("showed an overall ~%.1f%% %s latency improvement versus baseline run #%s (current %s %s ms)",
-            abs(rt_delta_pct), rt_metric_name, baseline_run_id, rt_metric_name, current_rt_fmt)
-  } else if (rt_delta_pct > 1) {
-    sprintf("showed an overall +%.1f%% %s latency regression versus baseline run #%s (current %s %s ms)",
-            abs(rt_delta_pct), rt_metric_name, baseline_run_id, rt_metric_name, current_rt_fmt)
+  base_latency_info <- if (nzchar(baseline_rt_fmt)) {
+    sprintf("<strong>%s ms</strong> vs %s ms baseline", current_rt_fmt, baseline_rt_fmt)
   } else {
-    sprintf("showed consistent overall %s latency versus baseline run #%s (current %s %s ms)",
-            rt_metric_name, baseline_run_id, rt_metric_name, current_rt_fmt)
+    sprintf("<strong>%s ms</strong>", current_rt_fmt)
+  }
+  if (rt_delta_pct < -1) {
+    sprintf("demonstrated a <strong>%.1f%% %s latency improvement</strong> compared to baseline run #%s (%s)",
+            abs(rt_delta_pct), rt_metric_name, baseline_run_id, base_latency_info)
+  } else if (rt_delta_pct > 1) {
+    sprintf("recorded a <strong>+%.1f%% %s latency regression</strong> compared to baseline run #%s (%s)",
+            abs(rt_delta_pct), rt_metric_name, baseline_run_id, base_latency_info)
+  } else {
+    sprintf("maintained consistent %s latency compared to baseline run #%s (%s)",
+            rt_metric_name, baseline_run_id, base_latency_info)
   }
 } else {
-  sprintf("achieved an overall %s response time of %s ms", rt_metric_name, current_rt_fmt)
+  sprintf("achieved an overall %s response time of <strong>%s ms</strong>", rt_metric_name, current_rt_fmt)
+}
+
+classify_flow_theme <- function(text_corpus) {
+  tc <- tolower(paste(text_corpus, collapse = " "))
+  if (grepl("search|query|find|filter", tc)) {
+    "search and query flows"
+  } else if (grepl("login|auth|token|sso|sign", tc)) {
+    "authentication and session flows"
+  } else if (grepl("pay|checkout|order|cart|invoice|purchase", tc)) {
+    "checkout and payment flows"
+  } else if (grepl("nav|page|home|view|detail|site|browse", tc)) {
+    "browsing and navigation flows"
+  } else if (grepl("export|download|report|upload", tc)) {
+    "reporting and data transfer flows"
+  } else {
+    "the slowest endpoints"
+  }
 }
 
 worst_label <- "none"
@@ -654,50 +724,39 @@ worst_sla <- format(round(rt_default), big.mark = ",")
 flow_theme <- "key application flows"
 breach_cnt <- if (isTRUE(rt_sla_enabled) && !is.null(rt_summary)) rt_summary$failed_count else if (isTRUE(rt_sla_enabled)) logical_rt_failed_cnt else 0L
 
+total_tx_cnt <- if (!is.null(rt_summary) && !is.null(rt_summary$all_labels)) nrow(rt_summary$all_labels) else 0L
+fast_tx_cnt <- if (total_tx_cnt > 0) sum(rt_summary$all_labels$actual_rt <= 2000, na.rm = TRUE) else 0L
+fast_tx_pct <- if (total_tx_cnt > 0) round((fast_tx_cnt / total_tx_cnt) * 100, 0) else 100
+
 if (!is.null(rt_summary) && nrow(rt_summary$top_breaches) > 0) {
   worst_row <- rt_summary$top_breaches[1, ]
   worst_label <- as.character(worst_row$label)
   worst_rt <- format(round(worst_row$actual_rt), big.mark = ",")
   worst_sla <- format(round(worst_row$threshold), big.mark = ",")
-
-  all_breach_text <- tolower(paste(rt_summary$top_breaches$label, collapse = " "))
-  flow_theme <- if (grepl("search|site|click", all_breach_text)) {
-    "search and clicksite-related flows"
-  } else if (grepl("login|auth|token", all_breach_text)) {
-    "authentication and session flows"
-  } else if (grepl("pay|checkout|order", all_breach_text)) {
-    "checkout and transaction flows"
-  } else {
-    "the slowest transactions"
-  }
+  flow_theme <- classify_flow_theme(c(as.character(rt_summary$top_breaches$label), worst_label))
 } else if (!is.null(rt_summary) && !is.null(rt_summary$all_labels) && nrow(rt_summary$all_labels) > 0) {
   slowest_idx <- which.max(rt_summary$all_labels$actual_rt)
   worst_row <- rt_summary$all_labels[slowest_idx, ]
   worst_label <- as.character(worst_row$label)
   worst_rt <- format(round(worst_row$actual_rt), big.mark = ",")
   worst_sla <- if (isTRUE(rt_sla_enabled)) format(round(worst_row$threshold), big.mark = ",") else "N/A (SLA disabled)"
-
-  lbl_lower <- tolower(worst_label)
-  flow_theme <- if (grepl("search|site|click", lbl_lower)) {
-    "search and clicksite-related flows"
-  } else if (grepl("login|auth|token", lbl_lower)) {
-    "authentication and session flows"
-  } else if (grepl("pay|checkout|order", lbl_lower)) {
-    "checkout and transaction flows"
-  } else {
-    "key application flows"
-  }
+  flow_theme <- classify_flow_theme(worst_label)
 }
 
-# Deterministic Synthesis (Plain English)
+# Deterministic Synthesis (Plain British English)
+tp_steady_text <- if ("steady_throughput" %in% names(current_run) && !is.na(current_run$steady_throughput[1]) && abs(current_run$steady_throughput[1] - current_run$throughput[1]) >= 0.1) {
+  sprintf(" (steady-state: <strong>%.2f TPS</strong>)", current_run$steady_throughput[1])
+} else ""
+
 det_p1 <- sprintf(
-  "%s for <strong>%s (%s)</strong> ran with <strong>%s virtual users</strong> (%s), sustaining an average of <strong>%.2f TPS</strong> with a <strong>%.2f%% error rate</strong>. Overall, the run %s.",
+  "%s for <strong>%s (%s)</strong> ran with <strong>%s virtual users</strong> (%s), sustaining an average throughput of <strong>%.2f TPS</strong>%s with an error rate of <strong>%.2f%%</strong>. Overall, the run %s.",
   test_type_str,
   app_names_str,
   env_str,
   vu_actual,
   duration_desc,
   current_run$throughput[1],
+  tp_steady_text,
   current_run$error_rate[1],
   rt_comp_str
 )
@@ -705,86 +764,108 @@ det_p1 <- sprintf(
 det_p2 <- if (!isTRUE(show_overall_status) || !isTRUE(any_sla_enabled)) {
   if (isTRUE(rt_sla_enabled) && !is.null(rt_summary) && breach_cnt > 0) {
     sprintf(
-      "Most transactions responded well under peak load, though <strong>%d transactions</strong> went over the <strong>%s ms</strong> %s target—most notably <strong>%s</strong> at <strong>%s ms</strong>. Reviewing and tuning these slower %s will help bring peak response times in line with the rest of the application.",
+      "Across the %d monitored transactions, <strong>%d of %d (%.0f%%)</strong> met all response criteria, while <strong>%d exceeded the %s ms %s target</strong>—led by <strong>%s</strong> at <strong>%s ms</strong>. Reviewing and tuning %s will help bring peak latency in line with the rest of the application.",
+      total_tx_cnt, total_tx_cnt - breach_cnt, total_tx_cnt, ((total_tx_cnt - breach_cnt) / max(1, total_tx_cnt)) * 100,
       breach_cnt, worst_sla, rt_metric_name, worst_label, worst_rt, flow_theme
     )
   } else if (!isTRUE(rt_sla_enabled) && nzchar(worst_label) && worst_label != "none") {
-    sprintf(
-      "Across the monitored scenarios, the highest %s response time was recorded on <strong>%s</strong> at <strong>%s ms</strong>. Reviewing the slowest %s will help identify opportunities for further tuning ahead of the next test run.",
-      rt_metric_name, worst_label, worst_rt, flow_theme
-    )
+    if (total_tx_cnt > 0 && fast_tx_cnt == total_tx_cnt) {
+      sprintf(
+        "Across all %d monitored transactions, responsiveness remained excellent throughout peak load with every transaction completing within 2 seconds (highest recorded: <strong>%s</strong> at <strong>%s ms</strong>). Reviewing %s will help maintain this performance profile in subsequent test cycles.",
+        total_tx_cnt, worst_label, worst_rt, flow_theme
+      )
+    } else if (total_tx_cnt > 0) {
+      sprintf(
+        "Across the %d monitored transactions, <strong>%d (%.0f%%)</strong> completed within 2 seconds, maintaining solid responsiveness across core user journeys. The slowest outlier was <strong>%s</strong> at <strong>%s ms</strong>. Profiling %s will help identify optimisation opportunities ahead of the next release.",
+        total_tx_cnt, fast_tx_cnt, fast_tx_pct, worst_label, worst_rt, flow_theme
+      )
+    } else {
+      sprintf(
+        "The highest %s response time was recorded on <strong>%s</strong> at <strong>%s ms</strong>. Reviewing %s will help identify optimisation opportunities ahead of the next test cycle.",
+        rt_metric_name, worst_label, worst_rt, flow_theme
+      )
+    }
   } else {
     sprintf(
-      "All monitored transactions stayed comfortably within their %s response time targets throughout the test, showing steady performance under peak load.",
-      rt_metric_name
+      "All monitored transactions stayed comfortably within acceptable response limits throughout the test, demonstrating solid stability under peak load."
     )
   }
 } else if (isTRUE(overall_status)) {
   sprintf(
-    "All monitored transactions met their response time targets with <strong>0 %s SLA breaches</strong> throughout peak load. The overall test status is <strong>PASS</strong>, and the application is ready for release under this workload.",
-    rt_metric_name
+    "All %d monitored transactions met their performance criteria with <strong>0 %s SLA breaches</strong> throughout peak load. The overall test status is <strong>PASS</strong>, and the application is cleared for release under this workload.",
+    total_tx_cnt, rt_metric_name
   )
 } else {
   if (logical_rt_failed_cnt > 0) {
     sprintf(
-      "While throughput was steady and errors remained low, <strong>%d transactions</strong> exceeded the %s response time SLA, with <strong>%s</strong> reaching <strong>%s ms</strong> against a <strong>%s ms</strong> limit. Because of these breaches, the overall test status is <strong>FAIL</strong>—we recommend reviewing the slow %s and planning a fix before re-running the test.",
-      breach_cnt, rt_metric_name, worst_label, worst_rt, worst_sla, flow_theme
+      "While throughput remained steady and error rates were low, <strong>%d of %d transactions</strong> breached the %s response time SLA, with <strong>%s</strong> reaching <strong>%s ms</strong> against a <strong>%s ms</strong> target. Due to these breaches, the overall test status is <strong>FAIL</strong>—we recommend profiling %s and implementing targeted fixes prior to re-testing.",
+      breach_cnt, total_tx_cnt, rt_metric_name, worst_label, worst_rt, worst_sla, flow_theme
     )
   } else if (logical_er_failed_cnt > 0) {
     sprintf(
-      "The test recorded an elevated error rate of <strong>%.2f%%</strong> (%s failed requests), which is above the allowed threshold. The overall test status is <strong>FAIL</strong>, and backend errors should be investigated and resolved before the next test run.",
+      "The test recorded an elevated error rate of <strong>%.2f%%</strong> (%s failed requests), exceeding the allowable threshold. The overall test status is <strong>FAIL</strong>, and backend failure causes should be diagnosed and resolved before re-running the test.",
       current_run$error_rate[1], format(current_run$failed_tx[1], big.mark = ",")
     )
   } else {
     sprintf(
-      "The test did not reach its target concurrency or throughput goals, resulting in an overall status of <strong>FAIL</strong>."
+      "The test did not achieve its target concurrency or throughput objectives, resulting in an overall status of <strong>FAIL</strong>."
     )
   }
 }
 
 duration_retest_str <- if (nzchar(val_ramp_down)) {
-  sprintf("%s + %s + %s", val_ramp_up, val_steady_state, val_ramp_down)
+  sprintf("%s, %s, %s", val_ramp_up, val_steady_state, val_ramp_down)
 } else {
-  sprintf("%s + %s", val_ramp_up, val_steady_state)
+  sprintf("%s, %s", val_ramp_up, val_steady_state)
 }
 
 det_next_steps <- if (!isTRUE(show_overall_status)) {
   if (!is.null(rt_summary) && breach_cnt > 0) {
     c(
-      sprintf("Investigate <strong>%s</strong> and check application and database logs during peak load to see what caused the slower response times.", worst_label),
-      "Apply targeted tuning (such as query optimisation or caching) to the slowest transactions shown in the breakdown table.",
-      sprintf("Run a follow-up test (%s) to compare results against Run #%s.", duration_retest_str, current_run_id)
+      sprintf("<strong>Targeted Endpoint Profiling:</strong> Profile <strong>%s</strong> (exceeded target at %s ms) and inspect database query plans and downstream dependencies during peak load.", worst_label, worst_rt),
+      sprintf("<strong>Query & Cache Optimisation:</strong> Apply targeted tuning (such as indexing, connection reuse, or caching) across %s.", flow_theme),
+      sprintf("<strong>Verification Retest:</strong> Re-run a validation test (%s) to compare performance against Run #%s.", duration_retest_str, current_run_id)
+    )
+  } else if (nzchar(worst_label) && worst_label != "none" && !is.na(as.numeric(gsub(",", "", worst_rt))) && as.numeric(gsub(",", "", worst_rt)) > 2000) {
+    c(
+      sprintf("<strong>Targeted Endpoint Profiling:</strong> Profile <strong>%s</strong> (recorded at %s ms) to verify whether query latency or payload size can be reduced.", worst_label, worst_rt),
+      if (has_baseline && rt_delta_pct < -1) {
+        sprintf("<strong>Promote Baseline Benchmark:</strong> Consider promoting Run #%s as the new baseline reference given the %.1f%% overall latency improvement.", current_run_id, abs(rt_delta_pct))
+      } else {
+        sprintf("<strong>Baseline Governance:</strong> Retain Run #%s as the reference baseline while tracking ongoing release trends.", baseline_run_id)
+      },
+      "<strong>Resource Headroom Check:</strong> Review application server CPU, memory, and database connection pool saturation during the steady-state period to confirm scaling headroom."
     )
   } else {
     c(
-      sprintf("Keep Run #%s as the baseline reference for future performance test cycles.", current_run_id),
-      "Continue tracking server CPU, memory, and response time trends in upcoming releases.",
-      "Share these test results with the project and engineering teams."
+      sprintf("<strong>Promote Baseline Benchmark:</strong> Maintain Run #%s as the performance baseline reference for future release cycles.", current_run_id),
+      "<strong>Resource Headroom Check:</strong> Review server CPU, heap utilisation, and response time metrics across upcoming releases.",
+      "<strong>Continuous Monitoring:</strong> Ensure automated APM alerts are active for all monitored transaction journeys in pre-production."
     )
   }
 } else if (isTRUE(overall_status)) {
   c(
-    sprintf("Use Run #%s as the new baseline for future release test cycles.", current_run_id),
-    "Save the server and APM monitoring metrics from this run as the benchmark profile.",
-    "Proceed with performance sign-off for the release."
+    sprintf("<strong>Promote Baseline Benchmark:</strong> Adopt Run #%s as the official performance benchmark for subsequent release cycles.", current_run_id),
+    "<strong>Capture Production Baseline:</strong> Archive server, database, and APM resource utilisation profiles from this test as the benchmark standard.",
+    "<strong>Release Sign-Off:</strong> Proceed with formal performance sign-off for release under the tested load profile."
   )
 } else if (logical_rt_failed_cnt > 0) {
   c(
-    sprintf("Investigate <strong>%s</strong> and correlate peak response times with server and database logs to find the bottleneck.", worst_label),
-    "Apply targeted fixes to the slow endpoints and verify the improvement in a lower environment.",
-    sprintf("Re-run the test under the same load profile (%s) to confirm all transactions meet their SLA.", duration_retest_str)
+    sprintf("<strong>Targeted Bottleneck Triage:</strong> Investigate <strong>%s</strong> (%s ms vs %s ms SLA) and correlate execution traces with database and microservice metrics.", worst_label, worst_rt, worst_sla),
+    sprintf("<strong>Performance Remediation:</strong> Implement targeted latency optimisations across %s and validate improvements in a lower test environment.", flow_theme),
+    sprintf("<strong>Verification Retest:</strong> Re-execute the workload profile (%s) to confirm all transactions comply with SLA thresholds.", duration_retest_str)
   )
 } else if (logical_er_failed_cnt > 0) {
   c(
-    "Check application and web server logs to find the root cause of the failing requests.",
-    "Review database connection pools and downstream service limits under peak load.",
-    "Re-run the test once the backend errors have been fixed."
+    "<strong>Root-Cause Error Triage:</strong> Inspect application server and gateway access logs to isolate the root causes of the failing requests.",
+    "<strong>Capacity & Pool Review:</strong> Verify database connection pools, thread pools, and downstream dependency rate limits under load.",
+    sprintf("<strong>Verification Retest:</strong> Re-run the workload profile (%s) once backend defects have been remediated.", duration_retest_str)
   )
 } else {
   c(
-    "Check load generator CPU, memory, and network capacity.",
-    "Review virtual user pacing and think-time settings in the test script.",
-    "Re-run the test to confirm it reaches the target user load and throughput."
+    "<strong>Load Generator Review:</strong> Check load generator CPU, memory, and network interface capacity.",
+    "<strong>Workload Configuration:</strong> Review virtual user pacing, thread distribution, and think-time settings in the test script.",
+    sprintf("<strong>Verification Retest:</strong> Re-run the test (%s) to verify target concurrency and throughput are achieved.", duration_retest_str)
   )
 }
 
@@ -986,7 +1067,7 @@ executive_summary_html <- sprintf(
        <p class="hd-summary-p">%s</p>
      </div>
      <div class="hd-summary-nextsteps-col">
-       <div class="hd-nextsteps-title">📋 Next Steps:</div>
+       <div class="hd-nextsteps-title">%s Next Steps:</div>
        <ul class="hd-nextsteps-list">
          %s
        </ul>
@@ -994,28 +1075,29 @@ executive_summary_html <- sprintf(
    </div>',
   final_p1,
   final_p2,
+  render_svg_icon("clipboard", 13),
   next_steps_items_html
 )
 
-vu_card_colour <- if (isTRUE(show_overall_status) && isTRUE(vu_sla_enabled) && identical(vu_status, "FAIL")) "#DC2626" else "#2563EB"
+vu_card_colour <- if (isTRUE(show_overall_status) && isTRUE(vu_sla_enabled) && identical(vu_status, "FAIL")) "#DC2626" else "#0A0A0A"
 vu_sub_text    <- if (isTRUE(vu_sla_enabled)) paste("Target", vu_target) else "SLA: Disabled"
 
 tp_val_text    <- if (isTRUE(tps_sla_enabled)) sprintf("%d of %d", tp_app_passed, tp_app_total) else sprintf("%.2f TPS", current_run$throughput[1])
 tp_sub_text    <- if (isTRUE(tps_sla_enabled)) sprintf("%.2f TPS", current_run$throughput[1]) else "SLA: Disabled"
-tp_lbl_text    <- if (isTRUE(tps_sla_enabled)) "Apps Passed TPS SLA 🔍" else "Overall Throughput 🔍"
+tp_lbl_text    <- if (isTRUE(tps_sla_enabled)) sprintf("Apps Passed TPS SLA %s", render_svg_icon("search", 10)) else sprintf("Overall Throughput %s", render_svg_icon("search", 10))
 
 rt_val_text    <- if (isTRUE(rt_sla_enabled)) sprintf("%d of %d", logical_rt_passed_cnt, logical_scen_total) else sprintf("%s ms", format(round(current_run$pct_rt[1]), big.mark = ","))
 rt_sub_text    <- if (isTRUE(rt_sla_enabled)) sprintf("%s ms %s", format(round(current_run$pct_rt[1]), big.mark = ","), rt_metric_name) else sprintf("%s (SLA: Disabled)", rt_metric_name)
-rt_lbl_text    <- if (isTRUE(rt_sla_enabled)) sprintf("Scenarios Met %s SLA 🔍", rt_metric_name) else sprintf("Overall %s Latency 🔍", rt_metric_name)
+rt_lbl_text    <- if (isTRUE(rt_sla_enabled)) sprintf("Scenarios Met %s SLA %s", rt_metric_name, render_svg_icon("search", 10)) else sprintf("Overall %s Latency %s", rt_metric_name, render_svg_icon("search", 10))
 
 er_val_text    <- if (isTRUE(er_sla_enabled)) sprintf("%d of %d", logical_er_passed_cnt, logical_scen_total) else sprintf("%.2f%%", current_run$error_rate[1])
 er_sub_text    <- if (isTRUE(er_sla_enabled)) sprintf("%.2f%% Err", current_run$error_rate[1]) else "SLA: Disabled"
-er_lbl_text    <- if (isTRUE(er_sla_enabled)) "Scenarios Passed Error SLA 🔍" else "Overall Error Rate 🔍"
+er_lbl_text    <- if (isTRUE(er_sla_enabled)) sprintf("Scenarios Passed Error SLA %s", render_svg_icon("search", 10)) else sprintf("Overall Error Rate %s", render_svg_icon("search", 10))
 
 kpi_row_html <- sprintf(
   '<div class="hd-exec-kpi-row">
      <div class="%s">
-       <div class="hd-assessment-title">⚡ Executive Summary &amp; Assessment</div>
+       <div class="hd-assessment-title">%s Executive Summary &amp; Assessment</div>
        %s
      </div>
      <div class="hd-kpi-strip">
@@ -1024,7 +1106,7 @@ kpi_row_html <- sprintf(
            <span class="hd-kpi-value" style="color:%s;">%s</span>
            <span class="hd-kpi-sub">%s</span>
          </div>
-         <div class="hd-kpi-label">Max Virtual Users 📈</div>
+         <div class="hd-kpi-label">Max Virtual Users %s</div>
        </label>
        <label for="hd-mode-sla" class="hd-kpi-tile" data-open-mode="sla" data-open-tab="ALL" style="border-left-color:%s;cursor:pointer;margin:0;">
          <div class="hd-kpi-value-row">
@@ -1050,8 +1132,9 @@ kpi_row_html <- sprintf(
      </div>
    </div>',
   callout_class,
+  render_svg_icon("zap", 13),
   executive_summary_html,
-  vu_card_colour, vu_card_colour, vu_actual, vu_sub_text,
+  vu_card_colour, vu_card_colour, vu_actual, vu_sub_text, render_svg_icon("chart", 11),
   status_colour(tp_status, enabled = tps_sla_enabled), status_colour(tp_status, enabled = tps_sla_enabled), tp_val_text, tp_sub_text, tp_lbl_text,
   status_colour(rt_status, enabled = rt_sla_enabled), status_colour(rt_status, enabled = rt_sla_enabled), rt_val_text, rt_sub_text, rt_lbl_text,
   status_colour(er_status, enabled = er_sla_enabled), status_colour(er_status, enabled = er_sla_enabled), er_val_text, er_sub_text, er_lbl_text
@@ -1076,9 +1159,10 @@ app_rows_html <- paste(
         "<span class='status-fail'>❌ FAIL</span>"
       }
       sprintf(
-        "<td><label for='hd-mode-sla' class='hd-modal-btn' data-open-mode='sla' data-open-tab='%s' style='margin:0;'>%s 🔍</label></td>",
+        "<td><label for='hd-mode-sla' class='hd-modal-btn' data-open-mode='sla' data-open-tab='%s' style='margin:0;'>%s %s</label></td>",
         app_id_safe,
-        status_badge_inner
+        status_badge_inner,
+        render_svg_icon("search", 11)
       )
     } else ""
 
@@ -1087,16 +1171,39 @@ app_rows_html <- paste(
     rt_delta_html <- inline_delta_badge(r$pct_rt, r$base_pct_rt, lower_is_better = TRUE)
     er_delta_html <- inline_delta_badge(r$error_rate, r$base_error_rate, lower_is_better = TRUE)
 
-    tp_cell <- paste0(metric_badge(sprintf("%.2f TPS", r$throughput), r$throughput_pass, enabled = tps_sla_enabled), tp_delta_html)
-    rt_cell <- paste0(
-      metric_badge(sprintf("%s ms", format(round(r$pct_rt), big.mark = ",")), r$scenario_pass, enabled = rt_sla_enabled),
-      rt_delta_html,
-      if (isTRUE(rt_sla_enabled) && !is.na(r$logical_failed) && r$logical_failed > 0) {
-        sprintf(" <span style='font-size:10px;color:#DC2626;font-weight:600;'>(%d scenario breach%s)</span>",
-                r$logical_failed, ifelse(r$logical_failed > 1, "es", ""))
-      } else ""
+    tx_val <- format(r$transactions, big.mark = ",")
+    tx_cell <- sprintf(
+      "<div class='hd-matrix-val-row'><span class='hd-matrix-val'>%s</span>%s</div>",
+      tx_val, tx_delta_html
     )
-    er_cell <- paste0(metric_badge(sprintf("%.2f%%", r$error_rate), r$error_pass, enabled = er_sla_enabled), er_delta_html)
+
+    tp_steady_hint <- if (!is.na(r$steady_throughput) && abs(r$steady_throughput - r$throughput) >= 0.1) {
+      sprintf("<div class='hd-matrix-sub-row' title='Sustained throughput during steady state'>Steady: <strong>%.2f TPS</strong></div>", r$steady_throughput)
+    } else ""
+    tp_val <- metric_badge(sprintf("%.2f TPS", r$throughput), r$throughput_pass, enabled = tps_sla_enabled)
+    tp_cell <- sprintf(
+      "<div class='hd-matrix-val-row'><span class='hd-matrix-val'>%s</span>%s</div>%s",
+      tp_val, tp_delta_html, tp_steady_hint
+    )
+
+    rt_steady_hint <- if (!is.na(r$steady_pct_rt) && abs(r$steady_pct_rt - r$pct_rt) >= 5) {
+      sprintf("<div class='hd-matrix-sub-row' title='Response time during steady state'>Steady: <strong>%s ms</strong></div>", format(round(r$steady_pct_rt), big.mark = ","))
+    } else ""
+    rt_breach_hint <- if (isTRUE(rt_sla_enabled) && !is.na(r$logical_failed) && r$logical_failed > 0) {
+      sprintf("<div class='hd-matrix-sub-row' style='color:#DC2626;font-weight:600;'>%d scenario breach%s</div>",
+              r$logical_failed, ifelse(r$logical_failed > 1, "es", ""))
+    } else ""
+    rt_val <- metric_badge(sprintf("%s ms", format(round(r$pct_rt), big.mark = ",")), r$scenario_pass, enabled = rt_sla_enabled)
+    rt_cell <- sprintf(
+      "<div class='hd-matrix-val-row'><span class='hd-matrix-val'>%s</span>%s</div>%s%s",
+      rt_val, rt_delta_html, rt_steady_hint, rt_breach_hint
+    )
+
+    er_val <- metric_badge(sprintf("%.2f%%", r$error_rate), r$error_pass, enabled = er_sla_enabled)
+    er_cell <- sprintf(
+      "<div class='hd-matrix-val-row'><span class='hd-matrix-val'>%s</span>%s</div>",
+      er_val, er_delta_html
+    )
 
     scen_btn_inner <- if (isTRUE(rt_sla_enabled)) {
       metric_badge(sprintf("%d of %d", r$logical_passed, r$logical_total), r$scenario_pass, enabled = rt_sla_enabled)
@@ -1104,25 +1211,26 @@ app_rows_html <- paste(
       sprintf("<span style='font-weight:600;'>%d Scenario%s</span>", r$logical_total, ifelse(r$logical_total == 1, "", "s"))
     }
     scen_btn <- sprintf(
-      "<label for='hd-mode-scenario' class='hd-modal-btn' data-open-mode='scenario' data-open-tab='%s' style='margin:0;'>%s 🔍</label>",
+      "<label for='hd-mode-scenario' class='hd-modal-btn' data-open-mode='scenario' data-open-tab='%s' style='margin:0;'>%s %s</label>",
       app_id_safe,
-      scen_btn_inner
+      scen_btn_inner,
+      render_svg_icon("search", 11)
     )
 
     sprintf(
       "<tr style='cursor:pointer;' data-open-mode='scenario' data-open-tab='%s'>
          <td style='font-weight:700;'>%s</td>
          %s
-         <td class='numeric-cell'>%s%s</td>
-         <td class='numeric-cell'>%s</td>
-         <td class='numeric-cell'>%s</td>
-         <td class='numeric-cell'>%s</td>
+         <td class='numeric-cell hd-matrix-metric-cell'>%s</td>
+         <td class='numeric-cell hd-matrix-metric-cell'>%s</td>
+         <td class='numeric-cell hd-matrix-metric-cell'>%s</td>
+         <td class='numeric-cell hd-matrix-metric-cell'>%s</td>
          <td style='text-align:center;'>%s</td>
        </tr>",
       app_id_safe,
       r$app_name,
       status_td,
-      format(r$transactions, big.mark = ","), tx_delta_html,
+      tx_cell,
       tp_cell,
       rt_cell,
       er_cell,
@@ -1146,20 +1254,21 @@ app_matrix_header_badges <- if (show_status_cols) {
 app_status_th <- if (show_status_cols) "<th>SLA Status</th>" else ""
 app_scen_th   <- if (isTRUE(rt_sla_enabled)) "Scenarios Met RT SLA" else "Scenarios"
 app_sub_hint  <- if (show_status_cols) {
-  sprintf("(Inline Δ vs Baseline #%s — Click SLA Status or %s 🔍 for Drilldown)", baseline_run_id, app_scen_th)
+  sprintf("(Inline Δ vs Baseline #%s — Click SLA Status or %s %s for Drilldown)", baseline_run_id, app_scen_th, render_svg_icon("search", 11))
 } else {
-  sprintf("(Inline Δ vs Baseline #%s — Click %s 🔍 for Drilldown)", baseline_run_id, app_scen_th)
+  sprintf("(Inline Δ vs Baseline #%s — Click %s %s for Drilldown)", baseline_run_id, app_scen_th, render_svg_icon("search", 11))
 }
 
+matrix_baseline_cls <- if (has_baseline) " has-baseline" else ""
 app_matrix_card_html <- sprintf(
-  '<div class="hd-card">
+  '<div class="hd-card hd-app-matrix-card%s">
      <div class="hd-card-header">
-       <h3 class="hd-card-title">🏥 Application Health &amp; Baseline Matrix <span style="font-size:10.5px;font-weight:500;color:#64748B;text-transform:none;">%s</span></h3>
+       <h3 class="hd-card-title">%s Application Health &amp; Baseline Matrix <span style="font-size:10.5px;font-weight:500;color:#64748B;text-transform:none;">%s</span></h3>
        <div class="hd-card-badges">
          %s
        </div>
      </div>
-     <div class="hd-table-scroll" style="max-height:110px;">
+     <div class="hd-table-scroll">
        <table class="hd-table">
          <thead>
            <tr>
@@ -1178,6 +1287,8 @@ app_matrix_card_html <- sprintf(
        </table>
      </div>
    </div>',
+  matrix_baseline_cls,
+  render_svg_icon("matrix", 14),
   app_sub_hint,
   app_matrix_header_badges,
   app_status_th,
@@ -1224,8 +1335,8 @@ logical_rows_html <- paste(
       sprintf("<span style='font-weight:600;'>%d Tx</span>", tot_lbl_cnt)
     }
     lbl_btn <- sprintf(
-      "<label for='hd-mode-label' class='hd-modal-btn' data-open-mode='label' data-open-tab='%s' style='margin:0;'>%s 🔍</label>",
-      scen_id_safe, lbl_b
+      "<label for='hd-mode-label' class='hd-modal-btn' data-open-mode='label' data-open-tab='%s' style='margin:0;'>%s %s</label>",
+      scen_id_safe, lbl_b, render_svg_icon("search", 11)
     )
     er_b   <- metric_badge(sprintf("%.2f%%", r$error_rate), r$error_passed, enabled = er_sla_enabled)
     app_td <- if (has_multi_app) sprintf("<td class='hd-scen-col-app' style='font-weight:700;font-size:11px;'>%s</td>", htmlEscape(r$app_name)) else ""
@@ -1260,18 +1371,20 @@ logical_rows_html <- paste(
 app_th        <- if (has_multi_app) "<th class='hd-scen-col-app'>App</th>" else ""
 scen_status_th <- if (show_status_cols) "<th style='text-align:center;'>Status</th>" else ""
 scen_tx_th     <- if (isTRUE(rt_sla_enabled)) "Transactions Met SLA" else "Transactions"
-scen_sub_hint  <- if (isTRUE(rt_sla_enabled)) "(Click Tx Met SLA 🔍)" else "(Click Transactions 🔍)"
+scen_sub_hint  <- if (isTRUE(rt_sla_enabled)) sprintf("(Click Tx Met SLA %s)", render_svg_icon("search", 11)) else sprintf("(Click Transactions %s)", render_svg_icon("search", 11))
 
 scen_header_status_badge <- if (show_status_cols && (isTRUE(rt_sla_enabled) || isTRUE(er_sla_enabled))) {
   sprintf(
-    '<label for="hd-mode-scenario" class="hd-modal-btn" data-open-mode="scenario" data-open-tab="ALL" style="margin:0;"><span class="%s">%d of %d Passed</span> 🔍</label>',
+    '<label for="hd-mode-scenario" class="hd-modal-btn" data-open-mode="scenario" data-open-tab="ALL" style="margin:0;"><span class="%s">%d of %d Passed</span> %s</label>',
     ifelse(logical_rt_failed_cnt == 0 && logical_er_failed_cnt == 0, "status-pass", "status-fail"),
-    sum(logical_health_df$scenario_passed, na.rm = TRUE), logical_scen_total
+    sum(logical_health_df$scenario_passed, na.rm = TRUE), logical_scen_total,
+    render_svg_icon("search", 11)
   )
 } else {
   sprintf(
-    '<label for="hd-mode-scenario" class="hd-modal-btn" data-open-mode="scenario" data-open-tab="ALL" style="margin:0;"><span class="status-na">%d Scenarios</span> 🔍</label>',
-    logical_scen_total
+    '<label for="hd-mode-scenario" class="hd-modal-btn" data-open-mode="scenario" data-open-tab="ALL" style="margin:0;"><span class="status-na">%d Scenarios</span> %s</label>',
+    logical_scen_total,
+    render_svg_icon("search", 11)
   )
 }
 
@@ -1279,14 +1392,14 @@ left_scenario_card_html <- sprintf(
   '<div class="hd-card">
      <div class="hd-card-header">
        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0;">
-         <h3 class="hd-card-title">🧭 Scenario Breakdown <span style="font-size:10px;font-weight:500;color:#64748B;text-transform:none;">%s</span></h3>
+         <h3 class="hd-card-title">%s Scenario Breakdown <span style="font-size:10px;font-weight:500;color:#64748B;text-transform:none;">%s</span></h3>
          <div class="hd-scen-filter-bar">
            <span style="font-size:10px;font-weight:700;color:#64748B;text-transform:uppercase;">App:</span>
            %s
          </div>
        </div>
        <div class="hd-card-badges">
-         <label for="hd-mode-charts" class="hd-modal-btn" data-open-mode="charts" data-open-tab="SCENARIOS" style="margin:0;">📊 Compare vs Base</label>
+         <label for="hd-mode-charts" class="hd-modal-btn" data-open-mode="charts" data-open-tab="SCENARIOS" style="margin:0;">%s Compare vs Base</label>
          %s
        </div>
      </div>
@@ -1310,8 +1423,10 @@ left_scenario_card_html <- sprintf(
        </table>
      </div>
    </div>',
+  render_svg_icon("compass", 14),
   scen_sub_hint,
   scen_app_pills_html,
+  render_svg_icon("chart", 12),
   scen_header_status_badge,
   app_th,
   scen_status_th,
@@ -1327,12 +1442,14 @@ label_to_logical <- cur_scen_map %>%
 
 right_breach_card_html <- if (isTRUE(rt_sla_enabled)) {
   breach_rows_html <- ""
-  breach_badge_html <- "<label for='hd-mode-charts' class='hd-modal-btn' data-open-mode='charts' data-open-tab='DISTRIBUTION' style='margin:0;'>⭐ Apdex Experience</label> <span class='status-pass'>0 Breaches</span>"
+  breach_badge_html <- sprintf("<label for='hd-mode-charts' class='hd-modal-btn' data-open-mode='charts' data-open-tab='DISTRIBUTION' style='margin:0;'>%s Apdex Experience</label> <span class='status-pass'>0 Breaches</span>", render_svg_icon("star", 12))
 
   if (!is.null(rt_summary) && rt_summary$failed_count > 0 && nrow(rt_summary$top_breaches) > 0) {
     breach_badge_html <- sprintf(
-      "<label for='hd-mode-charts' class='hd-modal-btn' data-open-mode='charts' data-open-tab='DISTRIBUTION' style='margin:0;'>⭐ Apdex Experience</label> <label for='hd-mode-label' class='hd-modal-btn' data-open-mode='label' data-open-tab='BREACHES' style='margin:0;'><span class='status-fail'>Top %d of %d Breaches</span> 🔍</label>",
-      nrow(rt_summary$top_breaches), rt_summary$failed_count
+      "<label for='hd-mode-charts' class='hd-modal-btn' data-open-mode='charts' data-open-tab='DISTRIBUTION' style='margin:0;'>%s Apdex Experience</label> <label for='hd-mode-label' class='hd-modal-btn' data-open-mode='label' data-open-tab='BREACHES' style='margin:0;'><span class='status-fail'>Top %d of %d Breaches</span> %s</label>",
+      render_svg_icon("star", 12),
+      nrow(rt_summary$top_breaches), rt_summary$failed_count,
+      render_svg_icon("search", 11)
     )
 
     top_b_df <- rt_summary$top_breaches %>%
@@ -1353,7 +1470,7 @@ right_breach_card_html <- if (isTRUE(rt_sla_enabled)) {
              <td class='numeric-cell' style='color:#64748B;'>%s ms</td>
              <td class='numeric-cell'>
                <div class='hd-microbar-cell'>
-                 <span class='hd-delta-inline hd-delta-fail'>▲ +%s%%</span>
+                 <span class='hd-delta-inline hd-delta-fail'><span class='hd-delta-symbol'>▲</span><span class='hd-delta-num'>+%s%%</span></span>
                  <div class='hd-microbar-track'><div class='hd-microbar-fill danger' style='width:%d%%;'></div></div>
                </div>
              </td>
@@ -1376,7 +1493,7 @@ right_breach_card_html <- if (isTRUE(rt_sla_enabled)) {
   sprintf(
     '<div class="hd-card">
        <div class="hd-card-header">
-         <h3 class="hd-card-title">🔥 Top Response Time Breaches <span style="font-size:10.5px;font-weight:500;color:#64748B;text-transform:none;">(%s vs Threshold — Click to View All)</span></h3>
+         <h3 class="hd-card-title">%s Top Response Time Breaches <span style="font-size:10.5px;font-weight:500;color:#64748B;text-transform:none;">(%s vs Threshold — Click to View All)</span></h3>
          <div class="hd-card-badges">%s</div>
        </div>
        <div class="hd-table-scroll">
@@ -1395,6 +1512,7 @@ right_breach_card_html <- if (isTRUE(rt_sla_enabled)) {
          </table>
        </div>
      </div>',
+    render_svg_icon("flame", 14),
     rt_metric_name,
     breach_badge_html,
     rt_metric_name,
@@ -1407,8 +1525,10 @@ right_breach_card_html <- if (isTRUE(rt_sla_enabled)) {
   max_slow_rt <- if (nrow(slow_df) > 0) max(slow_df$actual_rt, 1, na.rm = TRUE) else 1
 
   slow_badge_html <- sprintf(
-    "<label for='hd-mode-charts' class='hd-modal-btn' data-open-mode='charts' data-open-tab='DISTRIBUTION' style='margin:0;'>⭐ Apdex Experience</label> <label for='hd-mode-label' class='hd-modal-btn' data-open-mode='label' data-open-tab='ALL' style='margin:0;'><span class='total-app'>Top %d of %d Slowest</span> 🔍</label>",
-    nrow(slow_df), nrow(joined_labels_all)
+    "<label for='hd-mode-charts' class='hd-modal-btn' data-open-mode='charts' data-open-tab='DISTRIBUTION' style='margin:0;'>%s Apdex Experience</label> <label for='hd-mode-label' class='hd-modal-btn' data-open-mode='label' data-open-tab='ALL' style='margin:0;'><span class='total-app'>Top %d of %d Slowest</span> %s</label>",
+    render_svg_icon("star", 12),
+    nrow(slow_df), nrow(joined_labels_all),
+    render_svg_icon("search", 11)
   )
 
   slow_rows_html <- if (nrow(slow_df) > 0) {
@@ -1427,8 +1547,8 @@ right_breach_card_html <- if (isTRUE(rt_sla_enabled)) {
              <td class='numeric-cell'>%s</td>
              <td class='numeric-cell'>
                <div class='hd-microbar-cell'>
-                 <span style='font-family:Consolas,monospace;font-weight:700;color:#2563EB;'>%s ms</span>
-                 <div class='hd-microbar-track'><div class='hd-microbar-fill' style='width:%d%%;background:linear-gradient(90deg, #60A5FA 0%%, #2563EB 100%%);'></div></div>
+                 <span style='font-family:Consolas,monospace;font-weight:700;color:#0F172A;'>%s ms</span>
+                 <div class='hd-microbar-track'><div class='hd-microbar-fill' style='width:%d%%;background:#1E293B;'></div></div>
                </div>
              </td>
            </tr>",
@@ -1450,7 +1570,7 @@ right_breach_card_html <- if (isTRUE(rt_sla_enabled)) {
   sprintf(
     '<div class="hd-card">
        <div class="hd-card-header">
-         <h3 class="hd-card-title">⏱️ Top Slowest Transactions <span style="font-size:10.5px;font-weight:500;color:#64748B;text-transform:none;">(Highest %s Response Time — Click to View All)</span></h3>
+         <h3 class="hd-card-title">%s Top Slowest Transactions <span style="font-size:10.5px;font-weight:500;color:#64748B;text-transform:none;">(Highest %s Response Time — Click to View All)</span></h3>
          <div class="hd-card-badges">%s</div>
        </div>
        <div class="hd-table-scroll">
@@ -1469,6 +1589,7 @@ right_breach_card_html <- if (isTRUE(rt_sla_enabled)) {
          </table>
        </div>
      </div>',
+    render_svg_icon("timer", 14),
     rt_metric_name,
     slow_badge_html,
     rt_metric_name,
@@ -1493,8 +1614,10 @@ total_run_errors <- sum(error_summary_cur$errors, na.rm = TRUE)
 
 error_badge_html <- if (nrow(error_summary_cur) > 0) {
   sprintf(
-    "<label for='hd-mode-charts' class='hd-modal-btn' data-open-mode='charts' data-open-tab='ERRORS' style='margin:0;'>📈 Pareto</label> <label for='hd-mode-error' class='hd-modal-btn' data-open-mode='error' data-open-tab='ALL' style='margin:0;'><span class='status-fail'>Top %d of %d Transactions (%s Total Errors)</span> 🔍</label>",
-    nrow(top_errors), nrow(error_summary_cur), format(total_run_errors, big.mark = ",")
+    "<label for='hd-mode-charts' class='hd-modal-btn' data-open-mode='charts' data-open-tab='ERRORS' style='margin:0;'>%s Pareto</label> <label for='hd-mode-error' class='hd-modal-btn' data-open-mode='error' data-open-tab='ALL' style='margin:0;'><span class='status-fail'>Top %d of %d Transactions (%s Total Errors)</span> %s</label>",
+    render_svg_icon("chart", 12),
+    nrow(top_errors), nrow(error_summary_cur), format(total_run_errors, big.mark = ","),
+    render_svg_icon("search", 11)
   )
 } else {
   "<span class='status-pass'>0 Errors</span>"
@@ -1505,15 +1628,17 @@ error_rows_html <- if (nrow(top_errors) > 0) {
   paste(
     lapply(seq_len(nrow(top_errors)), function(i) {
       r <- top_errors[i, ]
-      tx_id_safe <- safe_dom_id(paste0(r$app_name, "_", r$label))
+      tx_scen_match <- cur_scen_map %>% filter(app_name == r$app_name, label == r$label) %>% pull(logical_scenario)
+      target_error_tab <- if (length(tx_scen_match) > 0 && nzchar(trimws(tx_scen_match[1]))) safe_dom_id(tx_scen_match[1]) else "ALL"
       bar_w <- max(min(round((r$errors / max_err_cnt) * 100, 0), 100), 6)
       err_btn <- sprintf(
         "<div class='hd-microbar-cell'>
-           <label for='hd-mode-error' class='hd-modal-btn' data-open-mode='error' data-open-tab='%s' style='margin:0;'><span style='color:#DC2626;font-weight:700;'>%s</span> 🔍</label>
+           <label for='hd-mode-error' class='hd-modal-btn' data-open-mode='error' data-open-tab='%s' style='margin:0;'><span style='color:#DC2626;font-weight:700;'>%s</span> %s</label>
            <div class='hd-microbar-track'><div class='hd-microbar-fill danger' style='width:%d%%;'></div></div>
          </div>",
-        tx_id_safe,
+        target_error_tab,
         format(r$errors, big.mark = ","),
+        render_svg_icon("search", 11),
         bar_w
       )
       sprintf(
@@ -1524,7 +1649,7 @@ error_rows_html <- if (nrow(top_errors) > 0) {
            <td class='numeric-cell'>%s</td>
            <td class='numeric-cell'>%.2f%%</td>
          </tr>",
-        tx_id_safe,
+        target_error_tab,
         r$app_name, r$label,
         format(r$total_transactions, big.mark = ","),
         err_btn,
@@ -1540,7 +1665,7 @@ error_rows_html <- if (nrow(top_errors) > 0) {
 left_error_card_html <- sprintf(
   '<div class="hd-card">
      <div class="hd-card-header">
-       <h3 class="hd-card-title">⚠️ Top Error Contributors <span style="font-size:10.5px;font-weight:500;color:#64748B;text-transform:none;">(Click Row or Errors 🔍 for HTTP Breakdown)</span></h3>
+       <h3 class="hd-card-title">%s Top Error Contributors <span style="font-size:10.5px;font-weight:500;color:#64748B;text-transform:none;">(Click Row or Errors %s for HTTP Breakdown)</span></h3>
        <div class="hd-card-badges">%s</div>
      </div>
      <div class="hd-table-scroll">
@@ -1560,6 +1685,8 @@ left_error_card_html <- sprintf(
        </table>
      </div>
    </div>',
+  render_svg_icon("alert", 14),
+  render_svg_icon("search", 11),
   error_badge_html,
   error_rows_html
 )
@@ -1630,9 +1757,9 @@ rt_pass_row_html <- if (isTRUE(rt_sla_enabled)) {
 right_scorecard_card_html <- sprintf(
   '<div class="hd-card">
      <div class="hd-card-header">
-       <h3 class="hd-card-title">⚖️ Current vs Baseline Comparison <span style="font-size:10.5px;font-weight:500;color:#64748B;text-transform:none;">(Run #%s vs Baseline #%s)</span></h3>
+       <h3 class="hd-card-title">%s Current vs Baseline Comparison <span style="font-size:10.5px;font-weight:500;color:#64748B;text-transform:none;">(Run #%s vs Baseline #%s)</span></h3>
        <div class="hd-card-badges">
-         <label for="hd-mode-charts" class="hd-modal-btn" data-open-mode="charts" data-open-tab="GRID" style="margin:0;">📈 Trend Charts 🔍</label>
+         <label for="hd-mode-charts" class="hd-modal-btn" data-open-mode="charts" data-open-tab="GRID" style="margin:0;">%s Trend Charts %s</label>
          <span class="total-app">Δ Scorecard</span>
        </div>
      </div>
@@ -1678,7 +1805,10 @@ right_scorecard_card_html <- sprintf(
        </table>
      </div>
    </div>',
+  render_svg_icon("scale", 14),
   current_run_id, baseline_run_id,
+  render_svg_icon("chart", 12),
+  render_svg_icon("search", 11),
   current_run_id, baseline_run_id,
   format(current_run$total_users[1], big.mark = ","),
   format(baseline_run$total_users[1], big.mark = ","),
@@ -1714,7 +1844,7 @@ ts_cur  <- if (exists("db_timeseries")) db_timeseries %>% filter(run_id == curre
 ts_base <- if (exists("db_timeseries")) db_timeseries %>% filter(run_id == baseline_run_id) %>% arrange(elapsed_min) else tibble()
 
 build_svg_dual_line_chart <- function(cur_df, base_df, y_col, y_label, unit_str = "",
-                                      cur_color = "#2563EB", base_color = "#64748B",
+                                      cur_color = "#0F172A", base_color = "#64748B",
                                       ref_val = NULL, ref_label = NULL,
                                       sec_col = NULL, sec_label = NULL,
                                       svg_w = 520, svg_h = 195) {
@@ -1845,7 +1975,7 @@ chart1_panels[["ALL"]] <- sprintf(
   '<div class="hd-chart-app-panel hd-chart-app-ALL">%s</div>',
   build_svg_dual_line_chart(
     cur_df = ts_cur_all, base_df = ts_base_all, y_col = "pct_rt", y_label = "ms",
-    cur_color = "#2563EB", base_color = "#64748B",
+    cur_color = "#0F172A", base_color = "#64748B",
     ref_val = rt_default, ref_label = paste0("SLA: ", format(round(rt_default), big.mark = ","), " ms")
   )
 )
@@ -1881,7 +2011,7 @@ for (app in unique_charts_apps) {
     safe_id,
     build_svg_dual_line_chart(
       cur_df = app_ts_cur, base_df = app_ts_base, y_col = "pct_rt", y_label = "ms",
-      cur_color = "#2563EB", base_color = "#64748B",
+      cur_color = "#0F172A", base_color = "#64748B",
       ref_val = app_rt_sla, ref_label = paste0("SLA: ", format(round(app_rt_sla), big.mark = ","), " ms")
     )
   )
@@ -1910,22 +2040,22 @@ for (app in unique_charts_apps) {
 chart1_card_html <- sprintf(
   '<div class="hd-chart-card">
      <div class="hd-chart-card-header">
-       <h4 class="hd-chart-card-title">⏱ %s Response Time Timeline (1-Min Intervals)</h4>
+       <h4 class="hd-chart-card-title">%s %s Response Time Timeline (1-Min Intervals)</h4>
        <div class="hd-chart-legend">
-         <span><span class="hd-legend-line" style="background:#2563EB;"></span>Current (#%s)</span>
+         <span><span class="hd-legend-line" style="background:#0F172A;"></span>Current (#%s)</span>
          <span><span class="hd-legend-line" style="background:#64748B;border-top:2px dashed #64748B;height:0;"></span>Baseline (#%s)</span>
          <span style="color:#DC2626;"><span class="hd-legend-line" style="background:#DC2626;"></span>SLA</span>
        </div>
      </div>
      %s
    </div>',
-  rt_metric_name, current_run_id, baseline_run_id, paste(unlist(chart1_panels), collapse = "\n")
+  render_svg_icon("timer", 12), rt_metric_name, current_run_id, baseline_run_id, paste(unlist(chart1_panels), collapse = "\n")
 )
 
 chart2_card_html <- sprintf(
   '<div class="hd-chart-card">
      <div class="hd-chart-card-header">
-       <h4 class="hd-chart-card-title">🚀 TPS &amp; VU Concurrency</h4>
+       <h4 class="hd-chart-card-title">%s TPS &amp; VU Concurrency</h4>
        <div class="hd-chart-legend">
          <span><span class="hd-legend-line" style="background:#16A34A;"></span>Current (#%s)</span>
          <span><span class="hd-legend-line" style="background:#64748B;border-top:2px dashed #64748B;height:0;"></span>Baseline (#%s)</span>
@@ -1934,7 +2064,7 @@ chart2_card_html <- sprintf(
      </div>
      %s
    </div>',
-  current_run_id, baseline_run_id, paste(unlist(chart2_panels), collapse = "\n")
+  render_svg_icon("chart", 12), current_run_id, baseline_run_id, paste(unlist(chart2_panels), collapse = "\n")
 )
 
 # Chart 3: Scenario P95 Response Time: Current vs Baseline (Stacked by Transaction + Clickable Scenario Modal)
@@ -1960,7 +2090,7 @@ cur_labels_by_scen <- if (nrow(joined_labels_all) > 0) {
       passed     = actual_rt <= rt_default,
       breach_pct = round(((actual_rt - rt_default) / rt_default) * 100, 1)
     ) %>%
-    distinct(app_name, logical_scenario, label, actual_rt, threshold, passed, breach_pct, tx_count, errors, error_rate)
+    distinct(app_name, logical_scenario, label, actual_rt, threshold, passed, breach_pct, tx_count, errors, error_rate, total_time_secs, burden_pct)
 }
 
 scen_tx_totals_cur <- cur_labels_by_scen %>%
@@ -2166,7 +2296,7 @@ scen_bars_html <- paste(
     sprintf(
       "<label for='hd-scen-drill-%s' class='hd-scen-stack-row hd-chart-scen-app-%s' style='display:block;margin-bottom:10px;cursor:pointer;'>
          <div style='display:flex;justify-content:space-between;align-items:center;font-size:11px;margin-bottom:3px;flex-wrap:wrap;gap:4px;'>
-           <span style='font-family:Consolas,monospace;font-weight:700;color:#0F172A;'>%s <span style='color:#64748B;font-weight:500;'>(%.2f TPS vs %.2f Base TPS &bull; %d tx)</span> <span style='font-size:9.5px;color:#2563EB;font-weight:600;margin-left:4px;'>🔍 View Transactions</span></span>
+           <span style='font-family:Consolas,monospace;font-weight:700;color:#0F172A;'>%s <span style='color:#64748B;font-weight:500;'>(%.2f TPS vs %.2f Base TPS &bull; %d tx)</span> <span style='font-size:9.5px;color:#0F172A;font-weight:600;margin-left:4px;'>%s View Transactions</span></span>
            <span><strong style='color:#0F172A;'>Total %s: %s ms</strong> vs <span style='color:#64748B;'>%s ms Base</span> %s</span>
          </div>
          <div class='hd-scen-stack-track-box' style='position:relative;background:#F1F5F9;border-radius:4px;padding:4px 6px;display:flex;flex-direction:column;gap:5px;'>
@@ -2185,7 +2315,7 @@ scen_bars_html <- paste(
          </div>
        </label>",
       drill_id, safe_dom_id(s$app_name),
-      s$logical_scenario, s$throughput, ifelse(is.na(s$base_tps), 0, s$base_tps), n_tx,
+      s$logical_scenario, s$throughput, ifelse(is.na(s$base_tps), 0, s$base_tps), n_tx, render_svg_icon("search", 10),
       rt_metric_name, format(round(total_cur_v), big.mark = ","), format(round(total_base_v), big.mark = ","), delta_b,
       cur_w, cur_segments_html,
       base_w, base_segments_html
@@ -2198,16 +2328,18 @@ chart3_card_html <- sprintf(
   '<div class="hd-chart-card">
      <div class="hd-chart-card-header">
        <div>
-         <h4 class="hd-chart-card-title">🧭 Scenario %s Response Time: Current vs Baseline</h4>
+         <h4 class="hd-chart-card-title">%s Scenario %s Response Time: Current vs Baseline</h4>
          <div style="font-size:10px;color:#64748B;margin-top:2px;">Stacked by transaction color &bull; Hover segments for transaction %s &bull; <strong>Click any scenario bar</strong> to open its Transaction SLA Breakdown modal.</div>
        </div>
        <div class="hd-chart-legend">
-         <span style="color:#2563EB;font-weight:600;">🎨 Color-coded by Transaction (Click row for SLA Chart 🔍)</span>
+         <span style="color:#475569;font-weight:600;">%s Color-coded by Transaction (Click row for SLA Chart %s)</span>
        </div>
      </div>
      <div style="padding-top:4px;">%s</div>
    </div>',
-  rt_metric_name, rt_metric_name, scen_bars_html
+  render_svg_icon("compass", 13), rt_metric_name, rt_metric_name,
+  render_svg_icon("chart", 11), render_svg_icon("search", 10),
+  scen_bars_html
 )
 
 # Chart 4: Error Timeline (Errors/Min) & Top Failing Transactions Pareto
@@ -2417,8 +2549,8 @@ render_apdex_panel <- function(target_app = "ALL") {
        </div>
        <div style='margin-top:8px;padding:6px 9px;background:#F8FAFC;border:1px solid #E2E8F0;border-radius:4px;font-size:10px;color:#475569;line-height:1.4;'>
          <div style='font-weight:700;color:#0F172A;margin-bottom:2px;display:flex;align-items:center;justify-content:space-between;'>
-           <span>💡 What is Apdex?</span>
-           <label for='hd-mode-glossary' class='hd-modal-btn' data-open-mode='glossary' data-open-tab='LATENCY' style='margin:0;font-size:9.5px;padding:1px 6px;'>📖 Read in Glossary 🔍</label>
+           <span>%s What is Apdex?</span>
+           <label for='hd-mode-glossary' class='hd-modal-btn' data-open-mode='glossary' data-open-tab='LATENCY' style='margin:0;font-size:9.5px;padding:1px 6px;'>%s Read in Glossary %s</label>
          </div>
          <strong>Apdex (Application Performance Index)</strong> is an open international standard (0.00 to 1.00) measuring user satisfaction. Each transaction is evaluated against its specific target threshold (<em>T</em>):
          <div style='margin-top:2px;display:flex;gap:10px;flex-wrap:wrap;'>
@@ -2435,7 +2567,9 @@ render_apdex_panel <- function(target_app = "ALL") {
     format(cur_tot, big.mark = ","),
     cur_stack_html, format(cur_tot, big.mark = ","),
     base_bar_block,
-    table_rows
+    table_rows,
+    render_svg_icon("zap", 11),
+    render_svg_icon("book", 10), render_svg_icon("search", 10)
   )
 }
 
@@ -2533,13 +2667,13 @@ render_modal_sla_table <- function(df, show_app_col = FALSE) {
     app_err_tx_cnt <- nrow(error_summary_cur %>% filter(app_name == r$app_name))
     app_err_tot    <- sum((error_summary_cur %>% filter(app_name == r$app_name))$errors, na.rm = TRUE)
     er_summary <- sprintf(
-      "%s total errors across %d failing transactions. <label for='hd-mode-error' class='hd-modal-btn' data-open-mode='error' data-open-tab='ALL' style='margin-left:6px;'>Inspect HTTP Errors 🔍</label>",
-      format(app_err_tot, big.mark = ","), app_err_tx_cnt
+      "%s total errors across %d failing transactions. <label for='hd-mode-error' class='hd-modal-btn' data-open-mode='error' data-open-tab='ALL' style='margin-left:6px;'>Inspect HTTP Errors %s</label>",
+      format(app_err_tot, big.mark = ","), app_err_tx_cnt, render_svg_icon("search", 10)
     )
 
     sc_summary <- sprintf(
-      "%d of %d scenarios passed %s Response Time SLA (%d failed). <label for='hd-mode-scenario' class='hd-modal-btn' data-open-mode='scenario' data-open-tab='%s' style='margin-left:6px;'>Inspect Scenarios 🔍</label>",
-      r$logical_passed, r$logical_total, rt_metric_name, r$logical_failed, app_id_safe
+      "%d of %d scenarios passed %s Response Time SLA (%d failed). <label for='hd-mode-scenario' class='hd-modal-btn' data-open-mode='scenario' data-open-tab='%s' style='margin-left:6px;'>Inspect Scenarios %s</label>",
+      r$logical_passed, r$logical_total, rt_metric_name, r$logical_failed, app_id_safe, render_svg_icon("search", 10)
     )
 
     tot_lbl <- ifelse(is.na(r$total_app_labels), 0L, r$total_app_labels)
@@ -2552,26 +2686,30 @@ render_modal_sla_table <- function(df, show_app_col = FALSE) {
       "All transactions met configured SLA thresholds."
     }
     lb_summary <- sprintf(
-      "%d of %d transactions met SLA (%d breaches). %s <label for='hd-mode-label' class='hd-modal-btn' data-open-mode='label' data-open-tab='BREACHES' style='margin-left:6px;'>Inspect Transactions 🔍</label>",
-      pas_lbl, tot_lbl, brc_lbl, worst_str
+      "%d of %d transactions met SLA (%d breaches). %s <label for='hd-mode-label' class='hd-modal-btn' data-open-mode='label' data-open-tab='BREACHES' style='margin-left:6px;'>Inspect Transactions %s</label>",
+      pas_lbl, tot_lbl, brc_lbl, worst_str, render_svg_icon("search", 10)
     )
+
+    tp_delta_b <- inline_delta_badge(r$throughput, r$base_throughput, lower_is_better = FALSE)
+    er_delta_b <- inline_delta_badge(r$error_rate, r$base_error_rate, lower_is_better = TRUE)
+    rt_delta_b <- inline_delta_badge(r$pct_rt, r$base_pct_rt, lower_is_better = TRUE)
 
     paste0(
       sprintf(
-        "<tr>%s<td style='font-weight:600;'>Throughput SLA</td><td style='text-align:center;'>%s</td><td class='numeric-cell'>&gt;= %.2f TPS</td><td class='numeric-cell'>%.2f TPS %s</td><td>%s</td></tr>",
+        "<tr>%s<td style='font-weight:600;'>Throughput SLA</td><td style='text-align:center;'>%s</td><td class='numeric-cell'>&gt;= %.2f TPS</td><td class='numeric-cell hd-matrix-metric-cell'><div class='hd-matrix-val-row'><span class='hd-matrix-val'>%.2f TPS</span>%s</div></td><td>%s</td></tr>",
         app_td, tp_status_b, r$throughput_target, r$throughput,
-        inline_delta_badge(r$throughput, r$base_throughput, lower_is_better = FALSE), tp_summary
+        tp_delta_b, tp_summary
       ),
       sprintf(
-        "<tr><td style='font-weight:600;'>Error Rate SLA</td><td style='text-align:center;'>%s</td><td class='numeric-cell'>&lt;= %.2f%%</td><td class='numeric-cell'>%.2f%% %s</td><td>%s</td></tr>",
+        "<tr><td style='font-weight:600;'>Error Rate SLA</td><td style='text-align:center;'>%s</td><td class='numeric-cell'>&lt;= %.2f%%</td><td class='numeric-cell hd-matrix-metric-cell'><div class='hd-matrix-val-row'><span class='hd-matrix-val'>%.2f%%</span>%s</div></td><td>%s</td></tr>",
         er_status_b, r$error_target, r$error_rate,
-        inline_delta_badge(r$error_rate, r$base_error_rate, lower_is_better = TRUE), er_summary
+        er_delta_b, er_summary
       ),
       sprintf(
-        "<tr><td style='font-weight:600;'>Scenario %s RT SLA</td><td style='text-align:center;'>%s</td><td class='numeric-cell'>%d of %d Scenarios</td><td class='numeric-cell'>%s ms %s</td><td>%s</td></tr>",
+        "<tr><td style='font-weight:600;'>Scenario %s RT SLA</td><td style='text-align:center;'>%s</td><td class='numeric-cell'>%d of %d Scenarios</td><td class='numeric-cell hd-matrix-metric-cell'><div class='hd-matrix-val-row'><span class='hd-matrix-val'>%s ms</span>%s</div></td><td>%s</td></tr>",
         rt_metric_name, sc_status_b, r$logical_total, r$logical_total,
         format(round(r$pct_rt), big.mark = ","),
-        inline_delta_badge(r$pct_rt, r$base_pct_rt, lower_is_better = TRUE), sc_summary
+        rt_delta_b, sc_summary
       ),
       sprintf(
         "<tr><td style='font-weight:600;'>Transaction %s RT SLA</td><td style='text-align:center;'>%s</td><td class='numeric-cell'>%d of %d Transactions</td><td class='numeric-cell'>%d Passed / %d Breached</td><td>%s</td></tr>",
@@ -2644,7 +2782,7 @@ render_modal_scenario_table <- function(df, show_app_col = FALSE) {
       } else {
         sprintf("<span style='font-weight:600;'>%d Tx</span>", row$total_labels)
       }
-      sprintf("<label for='hd-mode-label' class='hd-modal-btn' data-open-mode='label' data-open-tab='%s' style='margin:0;'>%s 🔍</label>", scen_id_safe, lbl_badge)
+      sprintf("<label for='hd-mode-label' class='hd-modal-btn' data-open-mode='label' data-open-tab='%s' style='margin:0;'>%s %s</label>", scen_id_safe, lbl_badge, render_svg_icon("search", 10))
     } else "<span class='status-na'>N/A</span>"
 
     err_badge <- metric_badge(sprintf("%.2f%%", row$error_rate), row$error_passed, enabled = er_sla_enabled)
@@ -2717,6 +2855,14 @@ render_modal_label_table <- function(df, show_scen_col = TRUE) {
     req_str <- if (!is.na(r$tx_count)) format(r$tx_count, big.mark = ",") else "—"
     err_str <- if (!is.na(r$error_rate)) sprintf("%.2f%%", r$error_rate) else "0.00%"
 
+    burden_val   <- if (!is.null(r$burden_pct) && !is.na(r$burden_pct)) r$burden_pct else 0
+    time_sec_val <- if (!is.null(r$total_time_secs) && !is.na(r$total_time_secs)) round(r$total_time_secs, 0) else 0
+    burden_bar_w <- max(pmin(round(burden_val * 1.5), 45), 2)
+    burden_td    <- sprintf(
+      "<td class='numeric-cell' style='white-space:nowrap;' title='Total Processing Time: %s seconds (%s%% of run burden)'><span class='hd-burden-bar' style='width:%spx;'></span><strong style='font-family:Consolas,monospace;'>%.1f%%</strong> <span style='font-size:10px;color:#64748B;'>(%ss)</span></td>",
+      format(time_sec_val, big.mark = ","), burden_val, burden_bar_w, burden_val, format(time_sec_val, big.mark = ",")
+    )
+
     if (isTRUE(rt_sla_enabled)) {
       st_td <- if (show_status_cols) {
         st_badge <- if (isTRUE(r$passed)) "<span class='status-pass'>PASS</span>" else "<span class='status-fail'>FAIL</span>"
@@ -2724,21 +2870,21 @@ render_modal_label_table <- function(df, show_scen_col = TRUE) {
       } else ""
       rt_badge <- metric_badge(sprintf("%s ms", format(round(r$actual_rt), big.mark = ",")), r$passed, enabled = rt_sla_enabled)
       variance_badge <- if (!isTRUE(r$passed)) {
-        sprintf("<span class='hd-delta-inline hd-delta-fail'>▲ +%s%%</span>", format(r$breach_pct, nsmall = 1))
+        sprintf("<span class='hd-delta-inline hd-delta-fail'><span class='hd-delta-symbol'>▲</span><span class='hd-delta-num'>+%s%%</span></span>", format(r$breach_pct, nsmall = 1))
       } else {
-        sprintf("<span class='hd-delta-inline hd-delta-pass'>▼ %s%%</span>", format(r$breach_pct, nsmall = 1))
+        sprintf("<span class='hd-delta-inline hd-delta-pass'><span class='hd-delta-symbol'>▼</span><span class='hd-delta-num'>%s%%</span></span>", format(r$breach_pct, nsmall = 1))
       }
       sprintf(
-        "<tr>%s<td style='font-family:monospace;font-size:11px;font-weight:600;'>%s</td>%s<td class='numeric-cell'>%s</td><td class='numeric-cell'>%s</td><td class='numeric-cell' style='color:#64748B;'>%s ms</td><td class='numeric-cell'>%s</td><td class='numeric-cell'>%s</td></tr>",
-        scen_td, r$label, st_td, req_str, rt_badge,
+        "<tr>%s<td style='font-family:monospace;font-size:11px;font-weight:600;'>%s</td>%s<td class='numeric-cell'>%s</td>%s<td class='numeric-cell'>%s</td><td class='numeric-cell' style='color:#64748B;'>%s ms</td><td class='numeric-cell'>%s</td><td class='numeric-cell'>%s</td></tr>",
+        scen_td, r$label, st_td, req_str, burden_td, rt_badge,
         format(round(r$threshold), big.mark = ","),
         variance_badge, err_str
       )
     } else {
-      rt_str <- sprintf("<span style='font-family:Consolas,monospace;font-weight:700;color:#2563EB;'>%s ms</span>", format(round(r$actual_rt), big.mark = ","))
+      rt_str <- sprintf("<span style='font-family:Consolas,monospace;font-weight:700;color:#0F172A;'>%s ms</span>", format(round(r$actual_rt), big.mark = ","))
       sprintf(
-        "<tr>%s<td style='font-family:monospace;font-size:11px;font-weight:600;'>%s</td><td class='numeric-cell'>%s</td><td class='numeric-cell'>%s</td><td class='numeric-cell'>%s</td></tr>",
-        scen_td, r$label, req_str, rt_str, err_str
+        "<tr>%s<td style='font-family:monospace;font-size:11px;font-weight:600;'>%s</td><td class='numeric-cell'>%s</td>%s<td class='numeric-cell'>%s</td><td class='numeric-cell'>%s</td></tr>",
+        scen_td, r$label, req_str, burden_td, rt_str, err_str
       )
     }
   })
@@ -2754,6 +2900,7 @@ render_modal_label_table <- function(df, show_scen_col = TRUE) {
             <th>Transaction</th>
             %s
             <th class="numeric-header">Requests</th>
+            <th class="numeric-header" title="Execution Burden: %% of total system processing time spent on this transaction (and total seconds)">Load Burden (%%)</th>
             <th class="numeric-header">Actual (%s)</th>
             <th class="numeric-header">SLA Threshold</th>
             <th class="numeric-header">Variance vs SLA</th>
@@ -2772,6 +2919,7 @@ render_modal_label_table <- function(df, show_scen_col = TRUE) {
             %s
             <th>Transaction</th>
             <th class="numeric-header">Requests</th>
+            <th class="numeric-header" title="Execution Burden: %% of total system processing time spent on this transaction (and total seconds)">Load Burden (%%)</th>
             <th class="numeric-header">Actual (%s)</th>
             <th class="numeric-header">Error Rate</th>
           </tr>
@@ -2830,21 +2978,19 @@ label_panels_html <- paste(
 )
 
 # ---- 8D. Build HTTP Error Codes & Error Messages Tables ----
-label_scen_lookup <- cur_scen_map %>%
-  group_by(app_name, label) %>%
-  summarise(logical_scenario = first(logical_scenario), .groups = "drop")
+total_modal_errors <- sum(error_details_cur$error_count, na.rm = TRUE)
+if (total_modal_errors == 0 && exists("total_run_errors")) {
+  total_modal_errors <- total_run_errors
+}
 
 error_details_enriched <- error_details_cur %>%
-  left_join(error_summary_cur %>% select(app_name, label, total_transactions, tx_errors = errors, tx_error_rate = error_rate),
-            by = c("app_name", "label")) %>%
-  left_join(label_scen_lookup, by = c("app_name", "label")) %>%
   mutate(
-    logical_scenario = ifelse(is.na(logical_scenario), "-", logical_scenario),
+    logical_scenario = ifelse(is.na(logical_scenario) | !nzchar(trimws(logical_scenario)), "-", logical_scenario),
     http_code_clean  = ifelse(is.na(responseCode) | responseCode %in% c("", "0", "NA", "N/A"), "Non-HTTP", paste0("HTTP ", responseCode)),
     error_msg_clean  = ifelse(is.na(responseMessage) | responseMessage %in% c("", "0", "NA"), "No error message recorded", responseMessage),
-    share_of_errors  = if (total_run_errors > 0) round((error_count / total_run_errors) * 100, 1) else 0
+    share_of_errors  = if (total_modal_errors > 0) round((error_count / total_modal_errors) * 100, 1) else 0
   ) %>%
-  arrange(desc(error_count), desc(tx_errors), label)
+  arrange(desc(error_count), logical_scenario, label)
 
 render_modal_error_table <- function(df) {
   if (nrow(df) == 0) {
@@ -2852,26 +2998,34 @@ render_modal_error_table <- function(df) {
   }
   rows <- sapply(seq_len(nrow(df)), function(i) {
     r <- df[i, ]
+    url_html <- if (!is.na(r$URL) && nzchar(r$URL) && r$URL != "null") {
+      sprintf("<div style='font-size:10px;color:#64748B;font-family:monospace;word-break:break-all;margin-top:2px;' title='%s'>%s</div>", 
+              htmlEscape(r$URL), htmlEscape(r$URL))
+    } else ""
+    
+    err_detail <- htmlEscape(r$error_msg_clean)
+    if (!is.na(r$failureMessage) && nzchar(trimws(r$failureMessage))) {
+      err_detail <- sprintf("%s<div style='font-size:10px;color:#DC2626;margin-top:2px;'>%s</div>", 
+                            err_detail, htmlEscape(trimws(r$failureMessage)))
+    }
+
     sprintf(
       "<tr>
          <td style='font-weight:600;'>%s</td>
          <td style='font-family:monospace;font-size:11px;'>%s</td>
-         <td style='font-family:monospace;font-size:11px;font-weight:600;'>%s</td>
+         <td style='font-family:monospace;font-size:11px;font-weight:600;'>%s%s</td>
          <td style='text-align:center;'><span class='hd-http-badge'>%s</span></td>
          <td style='font-family:monospace;font-size:11px;color:#1E293B;word-break:break-word;'>%s</td>
          <td class='numeric-cell' style='font-weight:700;color:#DC2626;'>%s</td>
-         <td class='numeric-cell'>%s</td>
-         <td class='numeric-cell'>%.2f%%</td>
-         <td class='numeric-cell'><span class='hd-delta-inline hd-delta-fail'>%.1f%%</span></td>
+         <td class='numeric-cell'><span class='hd-delta-inline hd-delta-fail' style='justify-content:center;'>%.1f%%</span></td>
        </tr>",
-      r$app_name,
-      r$logical_scenario,
-      r$label,
+      htmlEscape(r$app_name),
+      htmlEscape(r$logical_scenario),
+      htmlEscape(r$label),
+      url_html,
       htmlEscape(r$http_code_clean),
-      htmlEscape(r$error_msg_clean),
+      err_detail,
       format(r$error_count, big.mark = ","),
-      format(r$total_transactions, big.mark = ","),
-      r$tx_error_rate,
       r$share_of_errors
     )
   })
@@ -2882,12 +3036,10 @@ render_modal_error_table <- function(df) {
         <tr>
           <th>App</th>
           <th>Scenario</th>
-          <th>Transaction</th>
+          <th>Failed Request / Endpoint</th>
           <th style="text-align:center;">HTTP Code</th>
           <th>Error / Response Message</th>
           <th class="numeric-header">Errors</th>
-          <th class="numeric-header">Total Tx</th>
-          <th class="numeric-header">Tx Error Rate</th>
           <th class="numeric-header">Share of All Errors</th>
         </tr>
       </thead>
@@ -2897,24 +3049,21 @@ render_modal_error_table <- function(df) {
   )
 }
 
-error_tx_ids <- if (nrow(error_summary_cur) > 0) {
-  sapply(seq_len(nrow(error_summary_cur)), function(i) {
-    r <- error_summary_cur[i, ]
-    safe_dom_id(paste0(r$app_name, "_", r$label))
-  })
-} else character(0)
-error_tab_ids <- c("ALL", unname(error_tx_ids))
+failing_scenarios <- unique(error_details_enriched$logical_scenario)
+failing_scenarios <- failing_scenarios[!is.na(failing_scenarios) & failing_scenarios != "-" & nzchar(trimws(failing_scenarios))]
+
+error_scen_ids <- sapply(failing_scenarios, safe_dom_id)
+error_tab_ids  <- c("ALL", unname(error_scen_ids))
 
 error_tabs_html <- sprintf(
-  '<label for="hd-tab-error-ALL" class="hd-modal-tab-btn" data-mode="error" data-tab-id="ALL">All Failing Transactions (%d Tx | %s Errors)</label>%s',
-  nrow(error_summary_cur),
-  format(total_run_errors, big.mark = ","),
-  paste(sapply(seq_len(nrow(error_summary_cur)), function(i) {
-    r <- error_summary_cur[i, ]
-    tx_id_safe <- safe_dom_id(paste0(r$app_name, "_", r$label))
+  '<label for="hd-tab-error-ALL" class="hd-modal-tab-btn" data-mode="error" data-tab-id="ALL">All Errors (%s Total)</label>%s',
+  format(total_modal_errors, big.mark = ","),
+  paste(sapply(failing_scenarios, function(scen) {
+    safe_id <- safe_dom_id(scen)
+    scen_errs <- sum(error_details_enriched$error_count[error_details_enriched$logical_scenario == scen], na.rm = TRUE)
     sprintf(
       '<label for="hd-tab-error-%s" class="hd-modal-tab-btn" data-mode="error" data-tab-id="%s">%s (%s)</label>',
-      tx_id_safe, tx_id_safe, r$label, format(r$errors, big.mark = ",")
+      safe_id, safe_id, htmlEscape(scen), format(scen_errs, big.mark = ",")
     )
   }), collapse = "")
 )
@@ -2922,11 +3071,10 @@ error_tabs_html <- sprintf(
 error_panels_html <- paste(
   c(
     sprintf('<div id="error-data-ALL" class="hd-tab-panel">%s</div>', render_modal_error_table(error_details_enriched)),
-    sapply(seq_len(nrow(error_summary_cur)), function(i) {
-      r <- error_summary_cur[i, ]
-      tx_id_safe <- safe_dom_id(paste0(r$app_name, "_", r$label))
-      sub_df <- error_details_enriched %>% filter(app_name == r$app_name, label == r$label)
-      sprintf('<div id="error-data-%s" class="hd-tab-panel">%s</div>', tx_id_safe, render_modal_error_table(sub_df))
+    sapply(failing_scenarios, function(scen) {
+      safe_id <- safe_dom_id(scen)
+      sub_df  <- error_details_enriched %>% filter(logical_scenario == scen)
+      sprintf('<div id="error-data-%s" class="hd-tab-panel">%s</div>', safe_id, render_modal_error_table(sub_df))
     })
   ),
   collapse = "\n"
@@ -2935,21 +3083,33 @@ error_panels_html <- paste(
 # ---- 8E. Build Performance Glossary Tables ----
 glossary_df <- tibble::tribble(
   ~cat_id, ~category, ~term, ~formula, ~interpretation,
-  "LOAD", "Load & Throughput", "Max Virtual Users (VU)", "COUNT(DISTINCT user_index)", "Peak number of concurrent simulated users active during the test execution. Validates whether the target concurrency load was achieved.",
-  "LOAD", "Load & Throughput", "Throughput (TPS)", "Successful Transactions / Test Duration (secs)", "Rate of successful transactions processed per second across an Application, Scenario, or the entire Run. Higher TPS indicates stronger system capacity.",
+  # LOAD
+  "LOAD", "Load & Throughput", "Max Virtual Users (VU)", "SUM(GREATEST(MAX(allThreads), COUNT(DISTINCT CONCAT(thread_group, '|', threadName))))", "Peak concurrent simulated users across all application test plans. In multi-JMX/multi-CSV distributed architectures, active threads are summed across distinct thread pools to determine true simultaneous load without thread index collisions.",
+  "LOAD", "Load & Throughput", "Workload Phases (Ramp-up, Steady State, Ramp-down)", "Telemetry thread boundary analysis across application workloads", "Partitions test execution into distinct phases: Ramp-up (virtual user climb), Steady State (sustained target concurrency), and Ramp-down (cooldown). Automatically derived from concurrency telemetry to evaluate steady-state performance.",
+  "LOAD", "Load & Throughput", "Throughput (TPS) & Steady-State TPS", "Successful Transactions / Duration (secs)", "Rate of successful requests processed per second. Full-run TPS averages across the entire test window, while Steady-State TPS isolates sustained capacity during peak load, eliminating dilution from warmup or ramp-down.",
   "LOAD", "Load & Throughput", "Total Requests / Transactions", "COUNT(*) across the test window", "Total volume of transaction samples executed during the run (including both passed and failed requests). Used to verify test workload volume against baseline.",
+  "LOAD", "Load & Throughput", "Load Burden (%) & System Processing Time", "(SUM(elapsed) / Total Run Elapsed) * 100", "Measures cumulative server execution time consumed by a transaction across all its executions (in seconds and % of total test time). Highlights high-volume moderate-latency transactions that consume the bulk of CPU, thread pool, and database capacity even when individual latencies pass SLA.",
+
+  # LATENCY
   "LATENCY", "Response Time & Percentiles", paste0(rt_metric_name, " Response Time (ms)"), sprintf("QUANTILE_CONT(elapsed, %.2f)", rt_percentile), sprintf("The %s percentile transaction response time in milliseconds. %d%% of executed requests completed at or below this latency, isolating user experience from extreme single-request outliers.", rt_metric_name, round(rt_percentile * 100)),
-  "LATENCY", "Response Time & Percentiles", "SLA Threshold & Tolerance Band", "Threshold * (1 + Tolerance % / 100)", "Maximum acceptable response time configured per transaction (or default fallback) in sla.yaml. A transaction passes if its actual percentile RT stays within the threshold plus any configured tolerance band.",
+  "LATENCY", "Response Time & Percentiles", "Steady-State Response Time (ms)", sprintf("QUANTILE_CONT(elapsed, %.2f) during steady state", rt_percentile), "Percentile response time evaluated strictly within the sustained steady-state window. Prevents low-load warmup or ramp-up periods from artificially lowering perceived latency under load.",
+  "LATENCY", "Response Time & Percentiles", "SLA Threshold & Tolerance Band", "Threshold * (1 + Tolerance % / 100)", "Maximum acceptable response time configured per transaction (or default fallback) in performance-sla.yaml. A transaction passes if its actual percentile RT stays within the threshold plus any configured tolerance band.",
   "LATENCY", "Response Time & Percentiles", "Apdex (Application Performance Index)", "(Satisfied + 0.5 * Tolerating) / Total Samples", "An open international standard (0.00 to 1.00) measuring end-user satisfaction. Each transaction is judged against its specific target threshold (T): Satisfied (elapsed <= T), Tolerating (T < elapsed <= 4T), Frustrated (elapsed > 4T or HTTP Error). Automatically adapts to transactions with inherently longer operations (such as file uploads/downloads) without false penalties. Industry ratings: >= 0.94 Excellent, >= 0.85 Good, >= 0.70 Fair, >= 0.50 Poor, < 0.50 Unacceptable.",
   "LATENCY", "Response Time & Percentiles", "Variance / Impact vs SLA (▲ +X%)", "((Actual RT - SLA Threshold) / SLA Threshold) * 100", "Percentage by which a transaction exceeded (▲ +X% breach) or remained below (▼ -X% headroom) its configured Response Time SLA threshold.",
+
+  # SLA
   "SLA", "SLA & Evaluation Rules", "Overall Status (PASS / FAIL)", "VU Pass AND App TPS Pass AND Scenario RT Pass AND Scenario Error Pass", "Top-level executive release gate. Evaluates to PASS only when all four SLA dimensions pass across all tested applications and scenarios.",
-  "SLA", "SLA & Evaluation Rules", "Scenario (Logical Scenario)", "Grouped by Business Process (Injector IP stripped)", "A user journey or business process group (e.g., BP01_DW (Students), BP02_DW (Staffs), BP03_Mobile) aggregated across all load generators. A Scenario passes RT SLA only when 100% of its transactions pass.",
+  "SLA", "SLA & Evaluation Rules", "Scenario (Logical Scenario)", "TRIM(REGEXP_REPLACE(thread_group, '^(...)?(Thread Group - )?', ''))", "A business user journey or flow group aggregated across load generators. Cleans injector IP addresses and 'Thread Group - ' prefixes so distributed injectors collapse into one logical scenario.",
   "SLA", "SLA & Evaluation Rules", "Transactions Met RT SLA (X of Y)", "Passed Transactions / Total Distinct Transactions in Scenario", "Proportion of distinct transaction steps within a Scenario or Application whose percentile response time satisfied the SLA threshold.",
   "SLA", "SLA & Evaluation Rules", "TPS / Error / RT SLA Pass Rate (%)", "(Passed Entities / Total Entities) * 100", "Scorecard pass rates in the Current vs Baseline Comparison table measuring the percentage of Applications (for TPS), Scenarios (for Error Rate), and Transactions (for Response Time) that met SLA.",
+  "SLA", "SLA & Evaluation Rules", "Label Exclusions & Pacing Filtering", "label NOT IN (label_exclusions)", "Automatic pre-filtering of synthetic pacing timers (e.g. c_Thinktime, dw_pacing) and debug samplers configured in config.yaml or CLI. Excludes non-transactional overhead so statistics reflect real user activity.",
+
+  # DELTA
   "DELTA", "Baseline & Error Analysis", "Baseline Delta (▲ / ▼ %)", "((Current - Baseline) / Baseline) * 100", "Relative percentage change compared to the Baseline Run. Color-coded by metric polarity: green when performance improved (higher TPS, or lower Response Time / Error Rate) and red when degraded.",
   "DELTA", "Baseline & Error Analysis", "Error Rate (%)", "(Failed Transactions / Total Transactions) * 100", "Percentage of transactions that returned non-success status or HTTP errors. Evaluated against the configured Application Error Rate SLA threshold.",
   "DELTA", "Baseline & Error Analysis", "Error Pareto & Cumulative Share (Σ%)", "(Transaction Errors / Total Run Errors) * 100", "Ranks failing transactions from highest to lowest error count, showing each transaction's individual share (%) and running cumulative share (Σ%) of all test errors to isolate the top root-cause contributors.",
-  "DELTA", "Baseline & Error Analysis", "HTTP Code & Response Message", "Grouped by HTTP Status Code & JMeter/Tool Message", "Granular failure breakdown inside the HTTP Errors drilldown modal showing exact HTTP status codes (e.g., HTTP 500, HTTP 502, Non-HTTP timeout) and server error messages per transaction."
+  "DELTA", "Baseline & Error Analysis", "HTTP Code & Response Message", "Grouped by HTTP Status Code & JMeter/Tool Message", "Granular failure breakdown inside the HTTP Errors drilldown modal showing exact HTTP status codes (e.g., HTTP 500, HTTP 502, Non-HTTP timeout) and server error messages per transaction.",
+  "DELTA", "Baseline & Error Analysis", "Canonical JMeter Schema Normalization", "performance_history table layout", "Unified schema standardizing external tool results (JMeter, NeoLoad, k6, Locust) into standard columns (timeStamp, elapsed, label, responseCode, responseMessage, threadName, allThreads) for tool-agnostic analysis."
 )
 
 render_modal_glossary_table <- function(df) {
@@ -2959,7 +3119,7 @@ render_modal_glossary_table <- function(df) {
       "<tr>
          <td style='font-weight:700; width:21%%;'>%s</td>
          <td style='width:16%%;'><span class='total-app'>%s</span></td>
-         <td style='font-family:Consolas,monospace; font-size:11px; color:#2563EB; font-weight:600; width:24%%;'>%s</td>
+         <td style='font-family:Consolas,monospace; font-size:11px; color:#0F172A; font-weight:600; width:24%%;'>%s</td>
          <td style='line-height:1.4; width:39%%;'>%s</td>
        </tr>",
       htmlEscape(r$term),
@@ -3130,7 +3290,7 @@ sla_toggle_pill <- function(flag) {
 }
 
 gov_mode_pill <- if (isTRUE(show_overall_status)) {
-  "<span style='background:#DBEAFE;color:#1E40AF;border:1px solid #93C5FD;padding:2px 8px;border-radius:4px;font-size:10.5px;font-weight:700;'>Enforced (Overall Status: PASS / FAIL)</span>"
+  "<span style='background:#0A0A0A;color:#FFFFFF;border:1px solid #0A0A0A;padding:2px 8px;border-radius:4px;font-size:10.5px;font-weight:700;'>Enforced (Overall Status: PASS / FAIL)</span>"
 } else {
   "<span style='background:#FEF3C7;color:#92400E;border:1px solid #FDE68A;padding:2px 8px;border-radius:4px;font-size:10.5px;font-weight:700;'>Informational Only (Overall Verdict Hidden)</span>"
 }
@@ -3164,23 +3324,23 @@ slarules_all_html <- sprintf(
      </div>
 
      <div style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:6px; padding:10px 14px;">
-       <div style="font-weight:700; font-size:12px; color:#0F172A; margin-bottom:4px;">⏱️ Response Time Thresholds &amp; Overrides (SLA Metric: %s) %s</div>
+       <div style="font-weight:700; font-size:12px; color:#0F172A; margin-bottom:4px;">%s Response Time Thresholds &amp; Overrides (SLA Metric: %s) %s</div>
        %s
      </div>
 
      <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
        <div style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:6px; padding:10px 14px;">
-         <div style="font-weight:700; font-size:12px; color:#0F172A; margin-bottom:4px;">🚀 Throughput Targets by Application %s</div>
+         <div style="font-weight:700; font-size:12px; color:#0F172A; margin-bottom:4px;">%s Throughput Targets by Application %s</div>
          %s
        </div>
        <div style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:6px; padding:10px 14px;">
-         <div style="font-weight:700; font-size:12px; color:#0F172A; margin-bottom:4px;">⚠️ Maximum Allowable Error Rates %s</div>
+         <div style="font-weight:700; font-size:12px; color:#0F172A; margin-bottom:4px;">%s Maximum Allowable Error Rates %s</div>
          %s
        </div>
      </div>
    </div>',
   gov_mode_pill,
-  ifelse(isTRUE(rt_sla_enabled), "#2563EB", "#94A3B8"), sla_toggle_pill(rt_sla_enabled), ifelse(isTRUE(rt_sla_enabled), "#2563EB", "#64748B"),
+  ifelse(isTRUE(rt_sla_enabled), "#0A0A0A", "#94A3B8"), sla_toggle_pill(rt_sla_enabled), ifelse(isTRUE(rt_sla_enabled), "#0A0A0A", "#64748B"),
   rt_metric_str, rt_default_val, rt_unit_str, if (!is.null(rt_sla$overrides)) length(rt_sla$overrides) else 0L,
   ifelse(isTRUE(tps_sla_enabled), "#059669", "#94A3B8"), sla_toggle_pill(tps_sla_enabled), ifelse(isTRUE(tps_sla_enabled), "#059669", "#64748B"),
   tps_default_val, if (!is.null(tps_rule$application_thresholds)) length(tps_rule$application_thresholds) else 0L,
@@ -3188,28 +3348,28 @@ slarules_all_html <- sprintf(
   er_default_val, if (!is.null(er_rule$application_thresholds)) length(er_rule$application_thresholds) else 0L,
   ifelse(isTRUE(vu_sla_enabled), "#7C3AED", "#94A3B8"), sla_toggle_pill(vu_sla_enabled), ifelse(isTRUE(vu_sla_enabled), "#7C3AED", "#64748B"),
   if (!is.null(vu_rule)) as.integer(vu_rule$threshold) else 1L,
-  rt_metric_str, sla_toggle_pill(rt_sla_enabled),
+  render_svg_icon("timer", 12), rt_metric_str, sla_toggle_pill(rt_sla_enabled),
   slarules_rt_table_html,
-  sla_toggle_pill(tps_sla_enabled),
+  render_svg_icon("chart", 12), sla_toggle_pill(tps_sla_enabled),
   slarules_tps_table_html,
-  sla_toggle_pill(er_sla_enabled),
+  render_svg_icon("alert", 12), sla_toggle_pill(er_sla_enabled),
   slarules_er_table_html
 )
 
 slarules_tab_ids <- c("ALL", "RT", "TPS", "ERROR")
 slarules_tabs_html <- paste0(
   '<label for="hd-tab-slarules-ALL" class="hd-modal-tab-btn" data-mode="slarules" data-tab-id="ALL">All SLA Rules</label>',
-  sprintf('<label for="hd-tab-slarules-RT" class="hd-modal-tab-btn" data-mode="slarules" data-tab-id="RT">⏱️ Response Time SLAs (%s)</label>', rt_metric_str),
-  '<label for="hd-tab-slarules-TPS" class="hd-modal-tab-btn" data-mode="slarules" data-tab-id="TPS">🚀 Throughput Targets</label>',
-  '<label for="hd-tab-slarules-ERROR" class="hd-modal-tab-btn" data-mode="slarules" data-tab-id="ERROR">⚠️ Error Rate Limits</label>'
+  sprintf('<label for="hd-tab-slarules-RT" class="hd-modal-tab-btn" data-mode="slarules" data-tab-id="RT">%s Response Time SLAs (%s)</label>', render_svg_icon("timer", 12), rt_metric_str),
+  sprintf('<label for="hd-tab-slarules-TPS" class="hd-modal-tab-btn" data-mode="slarules" data-tab-id="TPS">%s Throughput Targets</label>', render_svg_icon("chart", 12)),
+  sprintf('<label for="hd-tab-slarules-ERROR" class="hd-modal-tab-btn" data-mode="slarules" data-tab-id="ERROR">%s Error Rate Limits</label>', render_svg_icon("alert", 12))
 )
 
 slarules_panels_html <- paste(
   c(
     sprintf('<div id="slarules-data-ALL" class="hd-tab-panel">%s</div>', slarules_all_html),
-    sprintf('<div id="slarules-data-RT" class="hd-tab-panel"><div style="background:#F8FAFC;border:1px solid #E2E8F0;border-radius:6px;padding:12px 14px;"><div style="font-weight:700;font-size:12px;color:#0F172A;margin-bottom:6px;">⏱️ Response Time SLA Rules (Evaluated Metric: %s, Tolerance: %s)</div>%s</div></div>', rt_metric_str, rt_tol_str, slarules_rt_table_html),
-    sprintf('<div id="slarules-data-TPS" class="hd-tab-panel"><div style="background:#F8FAFC;border:1px solid #E2E8F0;border-radius:6px;padding:12px 14px;"><div style="font-weight:700;font-size:12px;color:#0F172A;margin-bottom:6px;">🚀 Throughput SLA Targets (Default: &gt;= %.2f TPS)</div>%s</div></div>', tps_default_val, slarules_tps_table_html),
-    sprintf('<div id="slarules-data-ERROR" class="hd-tab-panel"><div style="background:#F8FAFC;border:1px solid #E2E8F0;border-radius:6px;padding:12px 14px;"><div style="font-weight:700;font-size:12px;color:#0F172A;margin-bottom:6px;">⚠️ Error Rate SLA Limits (Default: &lt;= %.2f%%)</div>%s</div></div>', er_default_val, slarules_er_table_html)
+    sprintf('<div id="slarules-data-RT" class="hd-tab-panel"><div style="background:#F8FAFC;border:1px solid #E2E8F0;border-radius:6px;padding:12px 14px;"><div style="font-weight:700;font-size:12px;color:#0F172A;margin-bottom:6px;">%s Response Time SLA Rules (Evaluated Metric: %s, Tolerance: %s)</div>%s</div></div>', render_svg_icon("timer", 13), rt_metric_str, rt_tol_str, slarules_rt_table_html),
+    sprintf('<div id="slarules-data-TPS" class="hd-tab-panel"><div style="background:#F8FAFC;border:1px solid #E2E8F0;border-radius:6px;padding:12px 14px;"><div style="font-weight:700;font-size:12px;color:#0F172A;margin-bottom:6px;">%s Throughput SLA Targets (Default: &gt;= %.2f TPS)</div>%s</div></div>', render_svg_icon("chart", 13), tps_default_val, slarules_tps_table_html),
+    sprintf('<div id="slarules-data-ERROR" class="hd-tab-panel"><div style="background:#F8FAFC;border:1px solid #E2E8F0;border-radius:6px;padding:12px 14px;"><div style="font-weight:700;font-size:12px;color:#0F172A;margin-bottom:6px;">%s Error Rate SLA Limits (Default: &lt;= %.2f%%)</div>%s</div></div>', render_svg_icon("alert", 13), er_default_val, slarules_er_table_html)
   ),
   collapse = "\n"
 )
@@ -3223,7 +3383,7 @@ build_mode_tab_state <- function(mode, tab_ids) {
   })
   css_rules <- sapply(tab_ids, function(tid) {
     paste0(
-      sprintf('#hd-tab-%s-%s:checked ~ .hd-viewport label[for="hd-tab-%s-%s"] { background:#2563EB !important; color:#FFFFFF !important; border-color:#2563EB !important; }\n', mode, tid, mode, tid),
+      sprintf('#hd-tab-%s-%s:checked ~ .hd-viewport label[for="hd-tab-%s-%s"] { background:#0A0A0A !important; color:#FFFFFF !important; border-color:#0A0A0A !important; }\n', mode, tid, mode, tid),
       sprintf('#hd-tab-%s-%s:checked ~ .hd-viewport #%s-data-%s { display:block !important; }', mode, tid, mode, tid)
     )
   })
@@ -3257,7 +3417,7 @@ scen_drill_css <- paste(
     paste0(
       sprintf('#hd-scen-drill-%s:checked ~ .hd-viewport #hd-scen-tx-modal-backdrop { display:flex !important; }\n', sid),
       sprintf('#hd-scen-drill-%s:checked ~ .hd-viewport #scen-tx-panel-%s { display:block !important; }\n', sid, sid),
-      sprintf('#hd-scen-drill-%s:checked ~ .hd-viewport label.hd-scen-pill[for="hd-scen-drill-%s"] { background:#2563EB !important; color:#FFFFFF !important; border-color:#2563EB !important; }', sid, sid)
+      sprintf('#hd-scen-drill-%s:checked ~ .hd-viewport label.hd-scen-pill[for="hd-scen-drill-%s"] { background:#0A0A0A !important; color:#FFFFFF !important; border-color:#0A0A0A !important; }', sid, sid)
     )
   }),
   collapse = "\n"
@@ -3285,11 +3445,11 @@ st_scen_app_inputs <- paste(sapply(seq_along(scen_app_ids), function(idx) {
 }), collapse = "\n")
 
 st_scen_app_css <- paste(c(
-  '#hd-scen-app-ALL:checked ~ .hd-viewport label[for="hd-scen-app-ALL"] { background:#2563EB !important; color:#FFFFFF !important; border-color:#2563EB !important; }',
+  '#hd-scen-app-ALL:checked ~ .hd-viewport label[for="hd-scen-app-ALL"] { background:#0A0A0A !important; color:#FFFFFF !important; border-color:#0A0A0A !important; }',
   sapply(unique_scen_apps, function(app) {
     aid <- safe_dom_id(app)
     paste0(
-      sprintf('#hd-scen-app-%s:checked ~ .hd-viewport label[for="hd-scen-app-%s"] { background:#2563EB !important; color:#FFFFFF !important; border-color:#2563EB !important; }\n', aid, aid),
+      sprintf('#hd-scen-app-%s:checked ~ .hd-viewport label[for="hd-scen-app-%s"] { background:#0A0A0A !important; color:#FFFFFF !important; border-color:#0A0A0A !important; }\n', aid, aid),
       sprintf('#hd-scen-app-%s:checked ~ .hd-viewport .hd-scen-table-row:not(.hd-scen-row-app-%s) { display:none !important; }\n', aid, aid),
       sprintf('#hd-scen-app-%s:checked ~ .hd-viewport .hd-scen-col-app { display:none !important; }', aid)
     )
@@ -3304,12 +3464,12 @@ st_charts_app_inputs <- paste(sapply(seq_along(chart_app_ids), function(idx) {
 
 st_charts_app_css <- paste(c(
   '.hd-chart-app-panel { display: none; }',
-  '#hd-charts-app-ALL:checked ~ .hd-viewport label[for="hd-charts-app-ALL"] { background:#2563EB !important; color:#FFFFFF !important; border-color:#2563EB !important; }',
+  '#hd-charts-app-ALL:checked ~ .hd-viewport label[for="hd-charts-app-ALL"] { background:#0A0A0A !important; color:#FFFFFF !important; border-color:#0A0A0A !important; }',
   '#hd-charts-app-ALL:checked ~ .hd-viewport .hd-chart-app-panel.hd-chart-app-ALL { display:block !important; }',
   sapply(unique_charts_apps, function(app) {
     aid <- safe_dom_id(app)
     paste0(
-      sprintf('#hd-charts-app-%s:checked ~ .hd-viewport label[for="hd-charts-app-%s"] { background:#2563EB !important; color:#FFFFFF !important; border-color:#2563EB !important; }\n', aid, aid),
+      sprintf('#hd-charts-app-%s:checked ~ .hd-viewport label[for="hd-charts-app-%s"] { background:#0A0A0A !important; color:#FFFFFF !important; border-color:#0A0A0A !important; }\n', aid, aid),
       sprintf('#hd-charts-app-%s:checked ~ .hd-viewport .hd-chart-app-panel.hd-chart-app-%s { display:block !important; }\n', aid, aid),
       sprintf('#hd-charts-app-%s:checked ~ .hd-viewport .hd-scen-stack-row:not(.hd-chart-scen-app-%s) { display:none !important; }\n', aid, aid),
       sprintf('#hd-charts-app-%s:checked ~ .hd-viewport .hd-scen-pill:not(.hd-chart-scen-app-%s) { display:none !important; }', aid, aid)
@@ -3323,7 +3483,7 @@ scen_tx_modal_html <- paste0(
   '  <div class="hd-modal-dialog hd-scen-tx-modal-dialog">',
   '    <div class="hd-modal-header">',
   '      <div style="display:flex; align-items:center; gap:8px;">',
-  sprintf('        <h4 style="margin:0; font-size:14px; font-weight:700; color:#ffffff;">🧭 Scenario Transaction %s Response Time Breakdown (Current vs Baseline)</h4>', rt_metric_name),
+  sprintf('        <h4 style="margin:0; font-size:14px; font-weight:700; color:#ffffff;">%s Scenario Transaction %s Response Time Breakdown (Current vs Baseline)</h4>', render_svg_icon("compass", 14), rt_metric_name),
   '      </div>',
   '      <div style="display:flex; align-items:center; gap:6px;">',
   '        <label for="hd-scen-drill-closed" style="background:#1E293B; color:#E2E8F0; border:1px solid #475569; border-radius:4px; padding:3px 10px; font-size:11px; font-weight:600; cursor:pointer; margin:0;">&larr; Back to Executive Charts</label>',
@@ -3346,7 +3506,6 @@ scen_tx_modal_html <- paste0(
 )
 
 root_state_inputs_html <- paste(
-  '<input type="checkbox" id="hd-theme-toggle-state" class="hd-state-input" />',
   '<input type="radio" name="hd-modal-mode" id="hd-mode-closed" class="hd-state-input" checked />',
   '<input type="radio" name="hd-modal-mode" id="hd-mode-charts" class="hd-state-input" />',
   '<input type="radio" name="hd-modal-mode" id="hd-mode-sla" class="hd-state-input" />',
@@ -3378,25 +3537,25 @@ modal_html <- paste0(
   '    <div class="hd-modal-header">',
   '      <div style="display:flex; align-items:center; gap:8px;">',
   '        <h4 id="hd-modal-title" style="margin:0; font-size:14px; font-weight:700; color:#ffffff;">',
-  '          <span class="hd-modal-title-item" data-mode="charts">📈 Executive Performance Charts</span>',
-  '          <span class="hd-modal-title-item" data-mode="sla">🏥 Application SLA Evaluation Summary</span>',
-  '          <span class="hd-modal-title-item" data-mode="scenario">🧭 Scenario Health Details</span>',
-  sprintf('          <span class="hd-modal-title-item" data-mode="label">%s</span>', if (isTRUE(rt_sla_enabled)) "🔥 Transaction Response Time SLA Breakdown" else "⏱️ Transaction Response Time Breakdown"),
-  '          <span class="hd-modal-title-item" data-mode="error">⚠️ HTTP Error Code &amp; Message Breakdown</span>',
-  '          <span class="hd-modal-title-item" data-mode="slarules">⚖️ Configured SLA Rules &amp; Thresholds (config.yaml)</span>',
-  '          <span class="hd-modal-title-item" data-mode="glossary">📖 Performance Terms &amp; Metrics Glossary</span>',
-  '          <span class="hd-modal-title-item" data-mode="evidence">🖥 Infrastructure Evidence (CPU / Memory)</span>',
+  sprintf('          <span class="hd-modal-title-item" data-mode="charts">%s Executive Performance Charts</span>', render_svg_icon("chart", 14)),
+  sprintf('          <span class="hd-modal-title-item" data-mode="sla">%s Application SLA Evaluation Summary</span>', render_svg_icon("matrix", 14)),
+  sprintf('          <span class="hd-modal-title-item" data-mode="scenario">%s Scenario Health Details</span>', render_svg_icon("compass", 14)),
+  sprintf('          <span class="hd-modal-title-item" data-mode="label">%s %s</span>', if (isTRUE(rt_sla_enabled)) render_svg_icon("flame", 14) else render_svg_icon("timer", 14), if (isTRUE(rt_sla_enabled)) "Transaction Response Time SLA Breakdown" else "Transaction Response Time Breakdown"),
+  sprintf('          <span class="hd-modal-title-item" data-mode="error">%s HTTP Error Code &amp; Message Breakdown</span>', render_svg_icon("alert", 14)),
+  sprintf('          <span class="hd-modal-title-item" data-mode="slarules">%s Configured SLA Rules &amp; Thresholds (config.yaml)</span>', render_svg_icon("scale", 14)),
+  sprintf('          <span class="hd-modal-title-item" data-mode="glossary">%s Performance Terms &amp; Metrics Glossary</span>', render_svg_icon("book", 14)),
+  sprintf('          <span class="hd-modal-title-item" data-mode="evidence">%s Infrastructure Evidence (CPU / Memory)</span>', render_svg_icon("server", 14)),
   '        </h4>',
   '      </div>',
   '      <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">',
-  '        <label for="hd-mode-charts" class="hd-modal-mode-btn" data-mode="charts" data-open-mode="charts" style="background:#1E293B; color:#E2E8F0; border:1px solid #475569; border-radius:4px; padding:3px 9px; font-size:11px; font-weight:600; cursor:pointer; margin:0;">📈 Executive Charts</label>',
-  if (isTRUE(show_overall_status) && isTRUE(any_sla_enabled)) '        <label for="hd-mode-sla" class="hd-modal-mode-btn" data-mode="sla" data-open-mode="sla" style="background:#1E293B; color:#E2E8F0; border:1px solid #475569; border-radius:4px; padding:3px 9px; font-size:11px; font-weight:600; cursor:pointer; margin:0;">🏥 SLA Status</label>' else '',
-  '        <label for="hd-mode-scenario" class="hd-modal-mode-btn" data-mode="scenario" data-open-mode="scenario" style="background:#1E293B; color:#E2E8F0; border:1px solid #475569; border-radius:4px; padding:3px 9px; font-size:11px; font-weight:600; cursor:pointer; margin:0;">🧭 Scenarios</label>',
-  sprintf('        <label for="hd-mode-label" class="hd-modal-mode-btn" data-mode="label" data-open-mode="label" style="background:#1E293B; color:#E2E8F0; border:1px solid #475569; border-radius:4px; padding:3px 9px; font-size:11px; font-weight:600; cursor:pointer; margin:0;">%s</label>', if (isTRUE(rt_sla_enabled)) "🔥 Transaction RT SLA" else "⏱️ Transaction RT"),
-  '        <label for="hd-mode-error" class="hd-modal-mode-btn" data-mode="error" data-open-mode="error" style="background:#1E293B; color:#E2E8F0; border:1px solid #475569; border-radius:4px; padding:3px 9px; font-size:11px; font-weight:600; cursor:pointer; margin:0;">⚠️ HTTP Errors</label>',
-  if (isTRUE(any_sla_enabled)) '        <label for="hd-mode-slarules" class="hd-modal-mode-btn" data-mode="slarules" data-open-mode="slarules" data-open-tab="ALL" style="background:#1E293B; color:#E2E8F0; border:1px solid #475569; border-radius:4px; padding:3px 9px; font-size:11px; font-weight:600; cursor:pointer; margin:0;">⚖️ SLA Criteria</label>' else '',
-  '        <label for="hd-mode-glossary" class="hd-modal-mode-btn" data-mode="glossary" data-open-mode="glossary" style="background:#1E293B; color:#E2E8F0; border:1px solid #475569; border-radius:4px; padding:3px 9px; font-size:11px; font-weight:600; cursor:pointer; margin:0;">📖 Glossary</label>',
-  if (has_evidence) '        <label for="hd-mode-evidence" class="hd-modal-mode-btn" data-mode="evidence" data-open-mode="evidence" data-open-tab="ALL" style="background:#1E293B; color:#E2E8F0; border:1px solid #475569; border-radius:4px; padding:3px 9px; font-size:11px; font-weight:600; cursor:pointer; margin:0;">🖥 Infrastructure</label>' else '',
+  sprintf('        <label for="hd-mode-charts" class="hd-modal-mode-btn" data-mode="charts" data-open-mode="charts" style="background:#1E293B; color:#E2E8F0; border:1px solid #475569; border-radius:4px; padding:3px 9px; font-size:11px; font-weight:600; cursor:pointer; margin:0;">%s Executive Charts</label>', render_svg_icon("chart", 12)),
+  if (isTRUE(show_overall_status) && isTRUE(any_sla_enabled)) sprintf('        <label for="hd-mode-sla" class="hd-modal-mode-btn" data-mode="sla" data-open-mode="sla" style="background:#1E293B; color:#E2E8F0; border:1px solid #475569; border-radius:4px; padding:3px 9px; font-size:11px; font-weight:600; cursor:pointer; margin:0;">%s SLA Status</label>', render_svg_icon("matrix", 12)) else '',
+  sprintf('        <label for="hd-mode-scenario" class="hd-modal-mode-btn" data-mode="scenario" data-open-mode="scenario" style="background:#1E293B; color:#E2E8F0; border:1px solid #475569; border-radius:4px; padding:3px 9px; font-size:11px; font-weight:600; cursor:pointer; margin:0;">%s Scenarios</label>', render_svg_icon("compass", 12)),
+  sprintf('        <label for="hd-mode-label" class="hd-modal-mode-btn" data-mode="label" data-open-mode="label" style="background:#1E293B; color:#E2E8F0; border:1px solid #475569; border-radius:4px; padding:3px 9px; font-size:11px; font-weight:600; cursor:pointer; margin:0;">%s %s</label>', if (isTRUE(rt_sla_enabled)) render_svg_icon("flame", 12) else render_svg_icon("timer", 12), if (isTRUE(rt_sla_enabled)) "Transaction RT SLA" else "Transaction RT"),
+  sprintf('        <label for="hd-mode-error" class="hd-modal-mode-btn" data-mode="error" data-open-mode="error" style="background:#1E293B; color:#E2E8F0; border:1px solid #475569; border-radius:4px; padding:3px 9px; font-size:11px; font-weight:600; cursor:pointer; margin:0;">%s HTTP Errors</label>', render_svg_icon("alert", 12)),
+  if (isTRUE(any_sla_enabled)) sprintf('        <label for="hd-mode-slarules" class="hd-modal-mode-btn" data-mode="slarules" data-open-mode="slarules" data-open-tab="ALL" style="background:#1E293B; color:#E2E8F0; border:1px solid #475569; border-radius:4px; padding:3px 9px; font-size:11px; font-weight:600; cursor:pointer; margin:0;">%s SLA Criteria</label>', render_svg_icon("scale", 12)) else '',
+  sprintf('        <label for="hd-mode-glossary" class="hd-modal-mode-btn" data-mode="glossary" data-open-mode="glossary" style="background:#1E293B; color:#E2E8F0; border:1px solid #475569; border-radius:4px; padding:3px 9px; font-size:11px; font-weight:600; cursor:pointer; margin:0;">%s Glossary</label>', render_svg_icon("book", 12)),
+  if (has_evidence) sprintf('        <label for="hd-mode-evidence" class="hd-modal-mode-btn" data-mode="evidence" data-open-mode="evidence" data-open-tab="ALL" style="background:#1E293B; color:#E2E8F0; border:1px solid #475569; border-radius:4px; padding:3px 9px; font-size:11px; font-weight:600; cursor:pointer; margin:0;">%s Infrastructure</label>', render_svg_icon("server", 12)) else '',
   '        <label for="hd-mode-closed" style="background:transparent; border:none; color:#ffffff; font-size:22px; cursor:pointer; line-height:1; padding:0 6px; margin-left:6px; margin-bottom:0;">&times;</label>',
   '      </div>',
   '    </div>',
@@ -3442,38 +3601,6 @@ modal_html <- paste0(
       document.title = navTitleEl.innerText;
     }
   } catch (e) {}
-
-  var themeCheckbox = document.getElementById("hd-theme-toggle-state");
-  function syncThemeFromCheckbox() {
-    if (!themeCheckbox) return;
-    var isDark = themeCheckbox.checked;
-    if (isDark) {
-      document.body.classList.add("dark-theme");
-    } else {
-      document.body.classList.remove("dark-theme");
-    }
-    try {
-      localStorage.setItem("aper_report_theme", isDark ? "dark" : "light");
-    } catch (e) {}
-  }
-
-  if (themeCheckbox) {
-    themeCheckbox.addEventListener("change", syncThemeFromCheckbox);
-    try {
-      var savedTheme = localStorage.getItem("aper_report_theme");
-      if (savedTheme === "dark") {
-        themeCheckbox.checked = true;
-        document.body.classList.add("dark-theme");
-      }
-    } catch (e) {}
-  }
-
-  window.toggleReportTheme = function() {
-    if (themeCheckbox) {
-      themeCheckbox.checked = !themeCheckbox.checked;
-      syncThemeFromCheckbox();
-    }
-  };
 
   function showDrilldown(mode, tabId, appId) {
     var modeRadio = document.getElementById("hd-mode-" + mode);

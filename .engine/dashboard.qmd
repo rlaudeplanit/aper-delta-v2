@@ -95,10 +95,15 @@ rt_tolerance_pct <- if (!is.null(rt_sla_config) && !is.null(rt_sla_config$tolera
 
 con <- dbConnect(duckdb::duckdb(shared_home = FALSE), dbdir = params$db_path, read_only = TRUE)
 
-target_table <- paste0("performance_history_", params$tool)
-if (!target_table %in% dbListTables(con)) {
+target_table <- if ("performance_history" %in% dbListTables(con)) {
+  "performance_history"
+} else if (paste0("performance_history_", params$tool) %in% dbListTables(con)) {
+  paste0("performance_history_", params$tool)
+} else if ("performance_history_jmeter" %in% dbListTables(con)) {
+  "performance_history_jmeter"
+} else {
   dbDisconnect(con)
-  stop(paste0("Error: Table '", target_table, "' does not exist in vault."))
+  stop("Error: No performance history table found in vault.")
 }
 
 all_identifiers <- dbGetQuery(con, sprintf(
@@ -155,20 +160,12 @@ where_clause <- sprintf("WHERE run_id IN (%s)%s%s", formatted_run_ids, sql_filte
 
 is_pass_expr <- "LOWER(TRIM(CAST(success AS VARCHAR))) IN ('true', 'yes', '1')"
 
-response_code_col <- if (params$tool == "jmeter") "REGEXP_REPLACE(CAST(responseCode AS VARCHAR), '\\.0$', '')" else "'N/A'"
-response_msg_col  <- if (params$tool == "jmeter") "CAST(responseMessage AS VARCHAR)" else "'Unknown Error'"
+response_code_col <- "REGEXP_REPLACE(CAST(responseCode AS VARCHAR), '\\.0$', '')"
+response_msg_col  <- "CAST(responseMessage AS VARCHAR)"
 
-csv_users_expr <- if (params$tool == "jmeter") {
-  "GREATEST(COALESCE(MAX(TRY_CAST(allThreads AS INTEGER)), 0), COUNT(DISTINCT CONCAT(thread_group, '|', threadName)))"
-} else {
-  "COUNT(DISTINCT CONCAT(COALESCE(population, ''), '|', COALESCE(userPath, ''), '|', COALESCE(threadName, CAST(user_index AS VARCHAR))))"
-}
+csv_users_expr <- "GREATEST(COALESCE(MAX(TRY_CAST(allThreads AS INTEGER)), 0), COUNT(DISTINCT CONCAT(thread_group, '|', threadName)))"
 
-csv_active_users_expr <- if (params$tool == "jmeter") {
-  "GREATEST(COALESCE(MAX(TRY_CAST(t.allThreads AS INTEGER)), 0), COUNT(DISTINCT CONCAT(t.thread_group, '|', t.threadName)))"
-} else {
-  "COUNT(DISTINCT CONCAT(COALESCE(t.population, ''), '|', COALESCE(t.userPath, ''), '|', COALESCE(t.threadName, CAST(t.user_index AS VARCHAR))))"
-}
+csv_active_users_expr <- "GREATEST(COALESCE(MAX(TRY_CAST(t.allThreads AS INTEGER)), 0), COUNT(DISTINCT CONCAT(t.thread_group, '|', t.threadName)))"
 
 sql_run_summary <- sprintf("
   WITH csv_vu AS (
@@ -277,6 +274,8 @@ sql_label_rt <- sprintf("
     run_id,
     label,
     ROUND(QUANTILE_CONT(elapsed, %f), 0) AS actual_rt,
+    ROUND(AVG(elapsed), 0) AS avg_rt,
+    ROUND(SUM(elapsed) / 1000.0, 1) AS total_time_secs,
     COUNT(*) AS tx_count,
     SUM(CASE WHEN NOT (%s) THEN 1 ELSE 0 END) AS errors
   FROM %s
@@ -285,7 +284,13 @@ sql_label_rt <- sprintf("
 ", rt_percentile, is_pass_expr, target_table, where_clause)
 
 db_label_rt <- dbGetQuery(con, sql_label_rt) %>%
-  mutate(error_rate = round((errors / tx_count) * 100, 2))
+  group_by(run_id) %>%
+  mutate(
+    error_rate          = round((errors / tx_count) * 100, 2),
+    total_run_time_secs = sum(total_time_secs, na.rm = TRUE),
+    burden_pct          = round((total_time_secs / pmax(total_run_time_secs, 1)) * 100, 1)
+  ) %>%
+  ungroup()
 
 sql_label_scen_map <- sprintf("
   SELECT DISTINCT
@@ -323,17 +328,33 @@ sql_error_details <- sprintf("
   SELECT
     run_id,
     app_name,
+    %s AS logical_scenario,
     label,
+    URL,
     %s AS responseCode,
     %s AS responseMessage,
+    CAST(failureMessage AS VARCHAR) AS failureMessage,
     COUNT(*) AS error_count
   FROM %s
-  %s AND NOT (%s)
-  GROUP BY run_id, app_name, label, responseCode, responseMessage
-  ORDER BY app_name, label, error_count DESC
-", response_code_col, response_msg_col, target_table, where_clause, is_pass_expr)
+  WHERE run_id IN (%s)
+    AND (thread_group IN (
+      SELECT DISTINCT thread_group
+      FROM %s
+      %s
+    ) OR thread_group IS NULL)
+    AND NOT (%s)
+  GROUP BY run_id, app_name, logical_scenario, label, URL, responseCode, responseMessage, failureMessage
+  ORDER BY app_name, logical_scenario, error_count DESC
+", clean_scenario_expr, response_code_col, response_msg_col, target_table, formatted_run_ids, target_table, where_clause, is_pass_expr)
 
 db_error_details <- dbGetQuery(con, sql_error_details)
+
+if (nrow(db_error_details) > 0) {
+  is_container <- grepl("^Number of samples in transaction", db_error_details$responseMessage, ignore.case = TRUE)
+  if (any(!is_container)) {
+    db_error_details <- db_error_details[!is_container, , drop = FALSE]
+  }
+}
 
 # 3G. 1-Minute Bucketed Time-Series per Run (for lightweight Executive Charts Modal)
 where_clause_t <- sprintf("WHERE t.run_id IN (%s)%s%s", formatted_run_ids, sql_filter_clause, sql_exclusion_clause)
@@ -431,72 +452,59 @@ sql_timeseries <- sprintf("
 db_timeseries <- dbGetQuery(con, sql_timeseries)
 
 # 3G-2. Telemetry-Based Workload Phase Detection (Multi-JMX / Multi-CSV Ramp-Up, Steady State, Ramp-Down)
-sql_workload_phases <- if (params$tool == "jmeter") {
-  sprintf("
-    WITH csv_peaks AS (
-      SELECT
-        run_id,
-        app_name,
-        COALESCE(csv_filename, app_name) AS csv_id,
-        MIN(timestamp) AS csv_min_ts,
-        MAX(timestamp) AS csv_max_ts,
-        COALESCE(MAX(TRY_CAST(allThreads AS INTEGER)), 0) AS csv_peak_threads
-      FROM %s
-      %s
-      GROUP BY run_id, app_name, COALESCE(csv_filename, app_name)
-    ),
-    csv_boundaries AS (
-      SELECT
-        t.run_id,
-        p.csv_id,
-        p.csv_min_ts,
-        p.csv_max_ts,
-        p.csv_peak_threads,
-        MIN(CASE WHEN p.csv_peak_threads > 0 AND TRY_CAST(t.allThreads AS INTEGER) >= p.csv_peak_threads THEN t.timestamp END) AS csv_first_steady_ts,
-        MAX(CASE WHEN p.csv_peak_threads > 0 AND TRY_CAST(t.allThreads AS INTEGER) >= FLOOR(p.csv_peak_threads * 0.98) THEN t.timestamp END) AS csv_last_steady_ts
-      FROM %s t
-      JOIN csv_peaks p ON t.run_id = p.run_id AND COALESCE(t.csv_filename, t.app_name) = p.csv_id
-      %s
-      GROUP BY t.run_id, p.csv_id, p.csv_min_ts, p.csv_max_ts, p.csv_peak_threads
-    )
+sql_workload_phases <- sprintf("
+  WITH csv_peaks AS (
     SELECT
       run_id,
-      CAST(SUM(csv_peak_threads) AS INTEGER) AS peak_all_threads,
-      CASE
-        WHEN SUM(csv_peak_threads) > 0 THEN
-          COALESCE(date_diff('seconds', MIN(csv_min_ts), MAX(csv_first_steady_ts)), 0)
-        ELSE CAST(NULL AS BIGINT)
-      END AS ramp_up_secs,
-      CASE
-        WHEN SUM(csv_peak_threads) > 0 THEN
-          COALESCE(
-            date_diff(
-              'seconds',
-              CASE
-                WHEN MIN(csv_last_steady_ts) > MAX(csv_first_steady_ts) THEN MIN(csv_last_steady_ts)
-                ELSE MAX(csv_last_steady_ts)
-              END,
-              MAX(csv_max_ts)
-            ),
-            0
-          )
-        ELSE CAST(NULL AS BIGINT)
-      END AS ramp_down_secs
-    FROM csv_boundaries
-    GROUP BY run_id
-  ", target_table, where_clause, target_table, where_clause_t)
-} else {
-  sprintf("
-    SELECT
-      run_id,
-      0 AS peak_all_threads,
-      CAST(NULL AS BIGINT) AS ramp_up_secs,
-      CAST(NULL AS BIGINT) AS ramp_down_secs
+      app_name,
+      COALESCE(csv_filename, app_name) AS csv_id,
+      MIN(timestamp) AS csv_min_ts,
+      MAX(timestamp) AS csv_max_ts,
+      COALESCE(MAX(TRY_CAST(allThreads AS INTEGER)), 0) AS csv_peak_threads
     FROM %s
     %s
-    GROUP BY run_id
-  ", target_table, where_clause)
-}
+    GROUP BY run_id, app_name, COALESCE(csv_filename, app_name)
+  ),
+  csv_boundaries AS (
+    SELECT
+      t.run_id,
+      p.csv_id,
+      p.csv_min_ts,
+      p.csv_max_ts,
+      p.csv_peak_threads,
+      MIN(CASE WHEN p.csv_peak_threads > 0 AND TRY_CAST(t.allThreads AS INTEGER) >= p.csv_peak_threads THEN t.timestamp END) AS csv_first_steady_ts,
+      MAX(CASE WHEN p.csv_peak_threads > 0 AND TRY_CAST(t.allThreads AS INTEGER) >= FLOOR(p.csv_peak_threads * 0.98) THEN t.timestamp END) AS csv_last_steady_ts
+    FROM %s t
+    JOIN csv_peaks p ON t.run_id = p.run_id AND COALESCE(t.csv_filename, t.app_name) = p.csv_id
+    %s
+    GROUP BY t.run_id, p.csv_id, p.csv_min_ts, p.csv_max_ts, p.csv_peak_threads
+  )
+  SELECT
+    run_id,
+    CAST(SUM(csv_peak_threads) AS INTEGER) AS peak_all_threads,
+    CASE
+      WHEN SUM(csv_peak_threads) > 0 THEN
+        COALESCE(date_diff('seconds', MIN(csv_min_ts), MAX(csv_first_steady_ts)), 0)
+      ELSE CAST(NULL AS BIGINT)
+    END AS ramp_up_secs,
+    CASE
+      WHEN SUM(csv_peak_threads) > 0 THEN
+        COALESCE(
+          date_diff(
+            'seconds',
+            CASE
+              WHEN MIN(csv_last_steady_ts) > MAX(csv_first_steady_ts) THEN MIN(csv_last_steady_ts)
+              ELSE MAX(csv_last_steady_ts)
+            END,
+            MAX(csv_max_ts)
+          ),
+          0
+        )
+      ELSE CAST(NULL AS BIGINT)
+    END AS ramp_down_secs
+  FROM csv_boundaries
+  GROUP BY run_id
+", target_table, where_clause, target_table, where_clause_t)
 
 db_workload_phases <- dbGetQuery(con, sql_workload_phases)
 
@@ -542,6 +550,74 @@ db_run_summary <- db_run_summary %>%
     steady_state_mins = pmax(1, duration_mins - ramp_up_mins - ramp_down_mins)
   ) %>%
   ungroup()
+
+# 3G-2. Steady-State Workload Metrics Calculation
+if (nrow(db_run_summary) > 0) {
+  steady_conditions <- sapply(seq_len(nrow(db_run_summary)), function(i) {
+    r <- db_run_summary[i, ]
+    ramp_up_sec   <- as.numeric(coalesce(r$ramp_up_mins, 0)) * 60
+    ramp_down_sec <- as.numeric(coalesce(r$ramp_down_mins, 0)) * 60
+    st_start      <- r$start_time + ramp_up_sec
+    st_end        <- r$end_time - ramp_down_sec
+    sprintf(
+      "(run_id = '%s' AND timestamp >= TIMESTAMP '%s' AND timestamp <= TIMESTAMP '%s')",
+      r$run_id,
+      format(st_start, "%Y-%m-%d %H:%M:%S"),
+      format(st_end, "%Y-%m-%d %H:%M:%S")
+    )
+  })
+  steady_where <- paste(steady_conditions, collapse = " OR ")
+
+  sql_steady_run <- sprintf("
+    SELECT
+      run_id,
+      COUNT(*) AS steady_tx,
+      SUM(CASE WHEN %s THEN 1 ELSE 0 END) AS steady_passed_tx,
+      SUM(CASE WHEN NOT (%s) THEN 1 ELSE 0 END) AS steady_errors,
+      ROUND(QUANTILE_CONT(elapsed, %f), 0) AS steady_pct_rt
+    FROM %s
+    WHERE (%s)%s%s
+    GROUP BY run_id
+  ", is_pass_expr, is_pass_expr, rt_percentile, target_table, steady_where, sql_filter_clause, sql_exclusion_clause)
+
+  db_steady_run <- dbGetQuery(con, sql_steady_run)
+
+  sql_steady_app <- sprintf("
+    SELECT
+      run_id,
+      app_name,
+      COUNT(*) AS steady_tx,
+      SUM(CASE WHEN %s THEN 1 ELSE 0 END) AS steady_passed_tx,
+      SUM(CASE WHEN NOT (%s) THEN 1 ELSE 0 END) AS steady_errors,
+      ROUND(QUANTILE_CONT(elapsed, %f), 0) AS steady_pct_rt
+    FROM %s
+    WHERE (%s)%s%s
+    GROUP BY run_id, app_name
+  ", is_pass_expr, is_pass_expr, rt_percentile, target_table, steady_where, sql_filter_clause, sql_exclusion_clause)
+
+  db_steady_app <- dbGetQuery(con, sql_steady_app)
+
+  db_run_summary <- db_run_summary %>%
+    left_join(db_steady_run, by = "run_id") %>%
+    mutate(
+      steady_duration_secs = pmax(1, as.numeric(steady_state_mins) * 60),
+      steady_throughput    = round(coalesce(steady_passed_tx, passed_tx) / steady_duration_secs, 2),
+      steady_error_rate    = round((coalesce(steady_errors, failed_tx) / pmax(1, coalesce(steady_tx, total_tx))) * 100, 2),
+      steady_pct_rt        = coalesce(steady_pct_rt, pct_rt)
+    )
+
+  db_app_summary <- db_app_summary %>%
+    left_join(
+      db_run_summary %>% select(run_id, steady_duration_secs),
+      by = "run_id"
+    ) %>%
+    left_join(db_steady_app, by = c("run_id", "app_name")) %>%
+    mutate(
+      steady_throughput = round(coalesce(steady_passed_tx, successful_transactions) / coalesce(steady_duration_secs, duration_secs), 2),
+      steady_error_rate = round((coalesce(steady_errors, errors) / pmax(1, coalesce(steady_tx, transactions))) * 100, 2),
+      steady_pct_rt     = coalesce(steady_pct_rt, pct_rt)
+    )
+}
 
 # 3H. Apdex User Experience & Performance Index per Run
 rt_overrides <- if (!is.null(rt_sla_config)) rt_sla_config$overrides else NULL
