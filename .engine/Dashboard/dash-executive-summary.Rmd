@@ -2983,6 +2983,15 @@ if (total_modal_errors == 0 && exists("total_run_errors")) {
   total_modal_errors <- total_run_errors
 }
 
+if (!("logical_scenario" %in% names(error_details_cur))) {
+  if (exists("cur_scen_map") && nrow(cur_scen_map) > 0) {
+    error_details_cur <- error_details_cur %>%
+      left_join(cur_scen_map %>% select(app_name, label, logical_scenario) %>% distinct(), by = c("app_name", "label"))
+  } else {
+    error_details_cur$logical_scenario <- "-"
+  }
+}
+
 error_details_enriched <- error_details_cur %>%
   mutate(
     logical_scenario = ifelse(is.na(logical_scenario) | !nzchar(trimws(logical_scenario)), "-", logical_scenario),
@@ -3727,6 +3736,133 @@ full_viewport_html <- paste0(
   modal_html,
   '</div>'
 )
+
+# ============================================================
+# 11. EXPORT MACHINE-READABLE SUMMARY JSON (CI/CD INTEGRATION)
+# ============================================================
+target_report_dir <- if (exists("params") && !is.null(params$report_dir) && nzchar(params$report_dir)) {
+  params$report_dir
+} else if (exists("report_dir") && nzchar(report_dir)) {
+  report_dir
+} else {
+  here::here("Reports")
+}
+
+if (!dir.exists(target_report_dir)) {
+  dir.create(target_report_dir, recursive = TRUE)
+}
+
+base_report_name <- if (exists("params") && !is.null(params$report_id) && nzchar(params$report_id)) {
+  params$report_id
+} else {
+  paste0("Performance_Report_", current_run_id, if (isTRUE(has_baseline)) paste0("_vs_", baseline_run_id) else "")
+}
+
+sidecar_json_path <- file.path(target_report_dir, paste0(base_report_name, ".json"))
+summary_json_path <- file.path(target_report_dir, "summary.json")
+
+ci_gate_enforced <- if (exists("params") && !is.null(params$ci_mode)) isTRUE(params$ci_mode) else FALSE
+
+summary_payload <- list(
+  version = "2.0.0",
+  generated_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"),
+  metadata = list(
+    project     = project_name,
+    scenario    = if (exists("params") && !is.null(params$scenario)) params$scenario else scenario_name,
+    tool        = if (exists("params") && !is.null(params$tool)) params$tool else "jmeter",
+    report_html = if (exists("params") && !is.null(params$report_filename) && nzchar(params$report_filename)) params$report_filename else paste0(base_report_name, ".html"),
+    report_json = paste0(base_report_name, ".json")
+  ),
+  runs = list(
+    current_run_id         = current_run_id,
+    baseline_run_id        = if (isTRUE(has_baseline)) baseline_run_id else NA_character_,
+    is_comparison          = isTRUE(has_baseline),
+    current_duration_mins  = current_run$duration_mins[1],
+    baseline_duration_mins = if (isTRUE(has_baseline)) baseline_run$duration_mins[1] else NA_real_
+  ),
+  verdict = list(
+    status           = if (isTRUE(show_overall_status) && isTRUE(any_sla_enabled)) (if (isTRUE(overall_status)) "PASS" else "FAIL") else "INFO",
+    overall_status   = if (isTRUE(overall_status)) "PASS" else "FAIL",
+    ci_gate_enforced = ci_gate_enforced,
+    ci_gate_pass     = isTRUE(overall_status),
+    summary_message  = if (isTRUE(overall_status)) {
+      "All monitored applications and scenarios satisfied their performance criteria."
+    } else {
+      "SLA breaches detected across one or more monitored criteria."
+    }
+  ),
+  sla_summary = list(
+    overall_pass = isTRUE(overall_status),
+    pillars = list(
+      virtual_users = list(
+        enabled = isTRUE(vu_sla_enabled),
+        status  = vu_status,
+        target  = vu_target,
+        actual  = current_run$total_users[1],
+        pass    = (!isTRUE(vu_sla_enabled) || identical(vu_status, "PASS"))
+      ),
+      throughput = list(
+        enabled     = isTRUE(tps_sla_enabled),
+        status      = tp_status,
+        actual_tps  = round(current_run$throughput[1], 2),
+        pass        = (!isTRUE(tps_sla_enabled) || tp_app_passed == tp_app_total),
+        passed_apps = tp_app_passed,
+        total_apps  = tp_app_total
+      ),
+      error_rate = list(
+        enabled          = isTRUE(er_sla_enabled),
+        status           = er_status,
+        actual_pct       = round(current_run$error_rate[1], 2),
+        pass             = (!isTRUE(er_sla_enabled) || logical_er_passed_cnt == logical_scen_total),
+        passed_scenarios = logical_er_passed_cnt,
+        total_scenarios  = logical_scen_total
+      ),
+      response_time = list(
+        enabled               = isTRUE(rt_sla_enabled),
+        metric                = rt_metric,
+        default_threshold_ms  = rt_default,
+        tolerance_pct         = rt_tolerance_pct,
+        breached_labels_count = breach_cnt,
+        status                = rt_status,
+        pass                  = (!isTRUE(rt_sla_enabled) || logical_rt_passed_cnt == logical_scen_total),
+        passed_scenarios      = logical_rt_passed_cnt,
+        total_scenarios       = logical_scen_total
+      )
+    )
+  ),
+  applications = lapply(seq_len(nrow(app_health)), function(i) {
+    r <- app_health[i, ]
+    list(
+      app_name         = r$app_name,
+      status           = if (!is.na(r$application_pass) && isTRUE(r$application_pass)) "PASS" else "FAIL",
+      requests         = as.numeric(r$transactions),
+      throughput_tps   = round(as.numeric(r$throughput), 2),
+      response_time_ms = round(as.numeric(r$pct_rt)),
+      error_rate_pct   = round(as.numeric(r$error_rate), 2),
+      passed_scenarios = as.numeric(r$logical_passed),
+      total_scenarios  = as.numeric(r$logical_total),
+      throughput_pass  = as.logical(r$throughput_pass),
+      error_pass       = as.logical(r$error_pass),
+      scenario_pass    = as.logical(r$scenario_pass)
+    )
+  }),
+  delta_summary = if (isTRUE(has_baseline)) {
+    list(
+      throughput_delta_pct = round(((current_run$throughput[1] - baseline_run$throughput[1]) / baseline_run$throughput[1]) * 100, 2),
+      error_rate_delta_abs = round(current_run$error_rate[1] - baseline_run$error_rate[1], 2),
+      total_tx_delta_pct   = round(((current_run$total_tx[1] - baseline_run$total_tx[1]) / baseline_run$total_tx[1]) * 100, 2)
+    )
+  } else NULL
+)
+
+tryCatch({
+  jsonlite::write_json(summary_payload, sidecar_json_path, pretty = TRUE, auto_unbox = TRUE, null = "null")
+  jsonlite::write_json(summary_payload, summary_json_path, pretty = TRUE, auto_unbox = TRUE, null = "null")
+  message(">>> [JSON] Exported machine-readable summary: ", sidecar_json_path)
+  message(">>> [JSON] Exported static summary: ", summary_json_path)
+}, error = function(e) {
+  warning("Failed to write JSON summary: ", conditionMessage(e))
+})
 
 knitr::raw_html(full_viewport_html)
 ```

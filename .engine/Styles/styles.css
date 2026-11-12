@@ -47,31 +47,15 @@ body {
    NAVIGATION BAR
 ============================================================ */
 
-.navbar {
-  color: #FFFFFF !important;
-  background: linear-gradient(
-    to right,
-    #111827 0%,
-    #374151 100%
-  );
-  border: none;
-  padding: 5px 10px;
-  min-width: 1400px;
+.navbar,
+.navbar-inverse,
+.navbar-fixed-top {
+  display: none !important;
 }
 
-.navbar-brand {
-  color: #FFFFFF !important;
-  font-weight: bold;
+body {
+  padding-top: 0 !important;
 }
-
-.navbar .navbar-nav > li.active > a,
-.navbar .navbar-nav > li > a:focus,
-.navbar .navbar-nav > li > a[aria-selected="true"] {
-  background-color: #4B5563 !important;
-  color: #FFFFFF !important;
-}
-
-
 /* ============================================================
    SECTION HEADERS
 ============================================================ */
@@ -437,26 +421,6 @@ body {
 }
 
 /* Tighten flexdashboard / quarto outer containers so single viewport fits */
-.navbar {
-  min-height: 34px !important;
-  height: 34px !important;
-  padding: 2px 12px !important;
-  min-width: 100% !important;
-}
-
-.navbar-brand {
-  font-size: 14px !important;
-  padding: 6px 10px !important;
-  height: 30px !important;
-  line-height: 18px !important;
-}
-
-.navbar-nav > li > a {
-  padding-top: 6px !important;
-  padding-bottom: 6px !important;
-  font-size: 12px !important;
-}
-
 .dashboard-page-wrapper,
 #dashboard-container,
 .container-fluid.main-container,

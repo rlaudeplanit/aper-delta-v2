@@ -65,7 +65,9 @@ args_map <- list(
   baseline         = "NONE",
   active_tool      = "jmeter",
   outputFolder     = "NONE",
-  labelFilterParam = "NONE"
+  labelFilterParam = "NONE",
+  ci               = FALSE,
+  fail_on_sla      = FALSE
 )
 
 if (length(raw_args) > 0) {
@@ -74,7 +76,14 @@ if (length(raw_args) > 0) {
       split_arg <- strsplit(sub("^--", "", arg), "=")[[1]]
       key <- split_arg[1]
       val <- if (length(split_arg) > 1) split_arg[2] else TRUE
-      if (key %in% names(args_map)) args_map[[key]] <- val
+      if (key == "fail-on-sla") key <- "fail_on_sla"
+      if (key %in% names(args_map)) {
+        if (key %in% c("ci", "fail_on_sla")) {
+          args_map[[key]] <- isTRUE(as.logical(val)) || identical(val, TRUE) || identical(tolower(as.character(val)), "true")
+        } else {
+          args_map[[key]] <- val
+        }
+      }
     }
   }
 }
@@ -84,6 +93,7 @@ rawResultsFolder <- args_map$rawResultsFolder
 active_tool      <- args_map$active_tool
 outputFolder     <- args_map$outputFolder
 labelFilterParam <- args_map$labelFilterParam
+ci_mode          <- isTRUE(args_map$ci) || isTRUE(args_map$fail_on_sla)
 
 # Support both explicit (--current / --base) and legacy (--comp1 / --comp2)
 raw_current <- if (args_map$current != "NONE") {
@@ -227,7 +237,29 @@ if (opMode == "menu") {
     }
     dbDisconnect(con, shutdown = TRUE)
   }
-  quit(save = "no")
+  summary_json_path <- file.path(report_dir, "summary.json")
+  ci_pass <- TRUE
+  if (file.exists(summary_json_path)) {
+    tryCatch({
+      sum_obj <- jsonlite::fromJSON(summary_json_path)
+      ci_pass <- isTRUE(sum_obj$verdict$ci_gate_pass)
+    }, error = function(e) {
+      warning("Could not parse summary.json for CI gate check: ", conditionMessage(e))
+    })
+  }
+
+  if (isTRUE(ci_mode)) {
+    if (isTRUE(ci_pass)) {
+      message(">>> [CI GATE] Result: PASS. All release criteria satisfied.")
+      quit(save = "no", status = 0)
+    } else {
+      message(">>> [CI GATE] Result: FAIL. One or more SLA thresholds breached.")
+      quit(save = "no", status = 1)
+    }
+  } else {
+    quit(save = "no", status = 0)
+  }
+
 }
 
 ################################################################################
@@ -523,7 +555,29 @@ if (opMode == "register") {
   dbDisconnect(con, shutdown = TRUE)
 
   message(">>> [SUCCESS] Registered as Run ID '", run_id, "' (Sequence #", sequence_num, ") in ", target_table)
-  quit(save = "no")
+  summary_json_path <- file.path(report_dir, "summary.json")
+  ci_pass <- TRUE
+  if (file.exists(summary_json_path)) {
+    tryCatch({
+      sum_obj <- jsonlite::fromJSON(summary_json_path)
+      ci_pass <- isTRUE(sum_obj$verdict$ci_gate_pass)
+    }, error = function(e) {
+      warning("Could not parse summary.json for CI gate check: ", conditionMessage(e))
+    })
+  }
+
+  if (isTRUE(ci_mode)) {
+    if (isTRUE(ci_pass)) {
+      message(">>> [CI GATE] Result: PASS. All release criteria satisfied.")
+      quit(save = "no", status = 0)
+    } else {
+      message(">>> [CI GATE] Result: FAIL. One or more SLA thresholds breached.")
+      quit(save = "no", status = 1)
+    }
+  } else {
+    quit(save = "no", status = 0)
+  }
+
 }
 
 ################################################################################
@@ -659,7 +713,10 @@ if (opMode == "report") {
     db_path         = db_path,
     label_filter    = sanitized_filter,
     excluded_labels = excluded_labels,
-    report_id       = tools::file_path_sans_ext(report_filename)
+    report_id       = tools::file_path_sans_ext(report_filename),
+    report_dir      = report_dir,
+    report_filename = report_filename,
+    ci_mode         = ci_mode
   )
 
   # Check if Quarto CLI is available for rendering storyteller.qmd
@@ -729,5 +786,26 @@ if (opMode == "report") {
   }
 
   message(">>> [SUCCESS] Report saved: ", file.path(report_dir, report_filename))
-  quit(save = "no")
+  summary_json_path <- file.path(report_dir, "summary.json")
+  ci_pass <- TRUE
+  if (file.exists(summary_json_path)) {
+    tryCatch({
+      sum_obj <- jsonlite::fromJSON(summary_json_path)
+      ci_pass <- isTRUE(sum_obj$verdict$ci_gate_pass)
+    }, error = function(e) {
+      warning("Could not parse summary.json for CI gate check: ", conditionMessage(e))
+    })
+  }
+
+  if (isTRUE(ci_mode)) {
+    if (isTRUE(ci_pass)) {
+      message(">>> [CI GATE] Result: PASS. All release criteria satisfied.")
+      quit(save = "no", status = 0)
+    } else {
+      message(">>> [CI GATE] Result: FAIL. One or more SLA thresholds breached.")
+      quit(save = "no", status = 1)
+    }
+  } else {
+    quit(save = "no", status = 0)
+  }
 }

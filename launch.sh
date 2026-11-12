@@ -1,6 +1,6 @@
 #!/bin/bash
 ###################################################
-# launch.sh - APER Delta Interactive Launcher (Linux/macOS)
+# launch.sh - APER Delta Interactive / CI Launcher (Linux/macOS)
 ###################################################
 
 # ── Get the directory where this script lives (project root) ──
@@ -18,10 +18,8 @@ fi
 # ── Find Rscript — check common locations ──
 RSCRIPT_EXE=""
 
-# Check if already on PATH
 if command -v Rscript &>/dev/null; then
   RSCRIPT_EXE=$(command -v Rscript)
-# Common Linux install locations
 elif [ -f "/usr/bin/Rscript" ]; then
   RSCRIPT_EXE="/usr/bin/Rscript"
 elif [ -f "/usr/local/bin/Rscript" ]; then
@@ -40,6 +38,74 @@ if [ -z "$RSCRIPT_EXE" ]; then
 fi
 
 echo "Using R: $RSCRIPT_EXE"
+
+###################################################
+# NON-INTERACTIVE / CI MODE
+###################################################
+if [ $# -gt 0 ]; then
+  R_ARGS=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --ci|-ci)
+        R_ARGS+=("--ci")
+        shift
+        ;;
+      --fail-on-sla|-fail-on-sla)
+        R_ARGS+=("--fail_on_sla")
+        shift
+        ;;
+      --current=*|--base=*|--comp1=*|--comp2=*|--opMode=*|--active_tool=*|--labelFilterParam=*|--outputFolder=*|--rawResultsFolder=*)
+        R_ARGS+=("$1")
+        shift
+        ;;
+      --current|-current)
+        R_ARGS+=("--current=$2")
+        shift 2
+        ;;
+      --base|-base)
+        R_ARGS+=("--base=$2")
+        shift 2
+        ;;
+      --comp1|-comp1)
+        R_ARGS+=("--comp1=$2")
+        shift 2
+        ;;
+      --comp2|-comp2)
+        R_ARGS+=("--comp2=$2")
+        shift 2
+        ;;
+      --opMode|-opMode)
+        R_ARGS+=("--opMode=$2")
+        shift 2
+        ;;
+      --active_tool|-active_tool|--toolType|-toolType)
+        R_ARGS+=("--active_tool=$2")
+        shift 2
+        ;;
+      --labelFilterParam|-labelFilterParam|--labelFilter|-labelFilter)
+        R_ARGS+=("--labelFilterParam=$2")
+        shift 2
+        ;;
+      --outputFolder|-outputFolder)
+        R_ARGS+=("--outputFolder=$2")
+        shift 2
+        ;;
+      --rawResultsFolder|-rawResultsFolder)
+        R_ARGS+=("--rawResultsFolder=$2")
+        shift 2
+        ;;
+      *)
+        R_ARGS+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  echo ""
+  echo "Launching APER Delta Engine (Headless / CI Mode)..."
+  "$RSCRIPT_EXE" --vanilla "$RSCRIPT_PATH" "${R_ARGS[@]}"
+  exit $?
+fi
 
 ###################################################
 # HELPER FUNCTIONS
@@ -68,7 +134,7 @@ select_tool_type() {
 }
 
 ###################################################
-# MAIN MENU
+# MAIN MENU (INTERACTIVE)
 ###################################################
 
 echo ""
@@ -185,4 +251,3 @@ fi
 
 echo ""
 echo "Process complete."
-

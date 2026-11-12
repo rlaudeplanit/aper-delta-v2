@@ -22,6 +22,9 @@ params:
   db_path: "Data/Performance_Vault.db"
   tool: "jmeter"
   report_id: "performance"
+  report_dir: "Reports"
+  report_filename: ""
+  ci_mode: false
 ---
 
 ```{r setup, include=FALSE}
