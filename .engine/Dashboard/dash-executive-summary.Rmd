@@ -1253,17 +1253,21 @@ app_matrix_header_badges <- if (show_status_cols) {
 
 app_status_th <- if (show_status_cols) "<th>SLA Status</th>" else ""
 app_scen_th   <- if (isTRUE(rt_sla_enabled)) "Scenarios Met RT SLA" else "Scenarios"
-app_sub_hint  <- if (show_status_cols) {
-  sprintf("(Inline Δ vs Baseline #%s — Click SLA Status or %s %s for Drilldown)", baseline_run_id, app_scen_th, render_svg_icon("search", 11))
+app_sub_hint  <- if (has_baseline) {
+  if (show_status_cols) {
+    sprintf("(Inline \u0394 vs Baseline #%s \u2014 Click SLA Status or %s %s for Drilldown)", baseline_run_id, app_scen_th, render_svg_icon("search", 10))
+  } else {
+    sprintf("(Inline \u0394 vs Baseline #%s \u2014 Click %s %s for Drilldown)", baseline_run_id, app_scen_th, render_svg_icon("search", 10))
+  }
 } else {
-  sprintf("(Inline Δ vs Baseline #%s — Click %s %s for Drilldown)", baseline_run_id, app_scen_th, render_svg_icon("search", 11))
+  sprintf("(Click %s %s for Drilldown)", app_scen_th, render_svg_icon("search", 10))
 }
 
 matrix_baseline_cls <- if (has_baseline) " has-baseline" else ""
 app_matrix_card_html <- sprintf(
   '<div class="hd-card hd-app-matrix-card%s">
      <div class="hd-card-header">
-       <h3 class="hd-card-title">%s Application Health &amp; Baseline Matrix <span style="font-size:10.5px;font-weight:500;color:#64748B;text-transform:none;">%s</span></h3>
+       <h3 class="hd-card-title">%s Application Health &amp; Baseline Matrix <span class="hd-card-sub">%s</span></h3>
        <div class="hd-card-badges">
          %s
        </div>
@@ -1288,7 +1292,7 @@ app_matrix_card_html <- sprintf(
      </div>
    </div>',
   matrix_baseline_cls,
-  render_svg_icon("matrix", 14),
+  render_svg_icon("matrix", 12),
   app_sub_hint,
   app_matrix_header_badges,
   app_status_th,
@@ -1371,7 +1375,17 @@ logical_rows_html <- paste(
 app_th        <- if (has_multi_app) "<th class='hd-scen-col-app'>App</th>" else ""
 scen_status_th <- if (show_status_cols) "<th style='text-align:center;'>Status</th>" else ""
 scen_tx_th     <- if (isTRUE(rt_sla_enabled)) "Transactions Met SLA" else "Transactions"
-scen_sub_hint  <- if (isTRUE(rt_sla_enabled)) sprintf("(Click Tx Met SLA %s)", render_svg_icon("search", 11)) else sprintf("(Click Transactions %s)", render_svg_icon("search", 11))
+scen_sub_hint  <- if (isTRUE(rt_sla_enabled)) {
+  sprintf("(Click Tx Met SLA %s)", render_svg_icon("search", 10))
+} else {
+  sprintf("(Click Transactions %s)", render_svg_icon("search", 10))
+}
+scen_filter_bar_html <- if (has_multi_app) {
+  sprintf(
+    '<div class="hd-scen-filter-bar"><span style="font-size:10px;font-weight:700;color:#64748B;text-transform:uppercase;">App:</span>%s</div>',
+    scen_app_pills_html
+  )
+} else ""
 
 scen_header_status_badge <- if (show_status_cols && (isTRUE(rt_sla_enabled) || isTRUE(er_sla_enabled))) {
   sprintf(
@@ -1391,12 +1405,9 @@ scen_header_status_badge <- if (show_status_cols && (isTRUE(rt_sla_enabled) || i
 left_scenario_card_html <- sprintf(
   '<div class="hd-card">
      <div class="hd-card-header">
-       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0;">
-         <h3 class="hd-card-title">%s Scenario Breakdown <span style="font-size:10px;font-weight:500;color:#64748B;text-transform:none;">%s</span></h3>
-         <div class="hd-scen-filter-bar">
-           <span style="font-size:10px;font-weight:700;color:#64748B;text-transform:uppercase;">App:</span>
-           %s
-         </div>
+       <div style="display:flex;align-items:center;gap:6px;min-width:0;">
+         <h3 class="hd-card-title">%s Scenario Breakdown <span class="hd-card-sub">%s</span></h3>
+         %s
        </div>
        <div class="hd-card-badges">
          <label for="hd-mode-charts" class="hd-modal-btn" data-open-mode="charts" data-open-tab="SCENARIOS" style="margin:0;">%s Compare vs Base</label>
@@ -1423,10 +1434,10 @@ left_scenario_card_html <- sprintf(
        </table>
      </div>
    </div>',
-  render_svg_icon("compass", 14),
+  render_svg_icon("compass", 12),
   scen_sub_hint,
-  scen_app_pills_html,
-  render_svg_icon("chart", 12),
+  scen_filter_bar_html,
+  render_svg_icon("chart", 11),
   scen_header_status_badge,
   app_th,
   scen_status_th,
@@ -1493,7 +1504,7 @@ right_breach_card_html <- if (isTRUE(rt_sla_enabled)) {
   sprintf(
     '<div class="hd-card">
        <div class="hd-card-header">
-         <h3 class="hd-card-title">%s Top Response Time Breaches <span style="font-size:10.5px;font-weight:500;color:#64748B;text-transform:none;">(%s vs Threshold — Click to View All)</span></h3>
+         <h3 class="hd-card-title">%s Top Response Time Breaches <span class="hd-card-sub">(%s vs Threshold — Click to View All)</span></h3>
          <div class="hd-card-badges">%s</div>
        </div>
        <div class="hd-table-scroll">
@@ -1512,7 +1523,7 @@ right_breach_card_html <- if (isTRUE(rt_sla_enabled)) {
          </table>
        </div>
      </div>',
-    render_svg_icon("flame", 14),
+    render_svg_icon("flame", 12),
     rt_metric_name,
     breach_badge_html,
     rt_metric_name,
@@ -1570,7 +1581,7 @@ right_breach_card_html <- if (isTRUE(rt_sla_enabled)) {
   sprintf(
     '<div class="hd-card">
        <div class="hd-card-header">
-         <h3 class="hd-card-title">%s Top Slowest Transactions <span style="font-size:10.5px;font-weight:500;color:#64748B;text-transform:none;">(Highest %s Response Time — Click to View All)</span></h3>
+         <h3 class="hd-card-title">%s Top Slowest Transactions <span class="hd-card-sub">(Highest %s Response Time — Click to View All)</span></h3>
          <div class="hd-card-badges">%s</div>
        </div>
        <div class="hd-table-scroll">
@@ -1589,7 +1600,7 @@ right_breach_card_html <- if (isTRUE(rt_sla_enabled)) {
          </table>
        </div>
      </div>',
-    render_svg_icon("timer", 14),
+    render_svg_icon("timer", 12),
     rt_metric_name,
     slow_badge_html,
     rt_metric_name,
@@ -1665,7 +1676,7 @@ error_rows_html <- if (nrow(top_errors) > 0) {
 left_error_card_html <- sprintf(
   '<div class="hd-card">
      <div class="hd-card-header">
-       <h3 class="hd-card-title">%s Top Error Contributors <span style="font-size:10.5px;font-weight:500;color:#64748B;text-transform:none;">(Click Row or Errors %s for HTTP Breakdown)</span></h3>
+       <h3 class="hd-card-title">%s Top Error Contributors <span class="hd-card-sub">(Click Row or Errors %s for HTTP Breakdown)</span></h3>
        <div class="hd-card-badges">%s</div>
      </div>
      <div class="hd-table-scroll">
@@ -1685,8 +1696,8 @@ left_error_card_html <- sprintf(
        </table>
      </div>
    </div>',
-  render_svg_icon("alert", 14),
-  render_svg_icon("search", 11),
+  render_svg_icon("alert", 12),
+  render_svg_icon("search", 10),
   error_badge_html,
   error_rows_html
 )
@@ -1757,7 +1768,7 @@ rt_pass_row_html <- if (isTRUE(rt_sla_enabled)) {
 right_scorecard_card_html <- sprintf(
   '<div class="hd-card">
      <div class="hd-card-header">
-       <h3 class="hd-card-title">%s Current vs Baseline Comparison <span style="font-size:10.5px;font-weight:500;color:#64748B;text-transform:none;">(Run #%s vs Baseline #%s)</span></h3>
+       <h3 class="hd-card-title">%s Current vs Baseline Comparison <span class="hd-card-sub">(Run #%s vs Baseline #%s)</span></h3>
        <div class="hd-card-badges">
          <label for="hd-mode-charts" class="hd-modal-btn" data-open-mode="charts" data-open-tab="GRID" style="margin:0;">%s Trend Charts %s</label>
          <span class="total-app">Δ Scorecard</span>
@@ -1805,9 +1816,9 @@ right_scorecard_card_html <- sprintf(
        </table>
      </div>
    </div>',
-  render_svg_icon("scale", 14),
+  render_svg_icon("scale", 12),
   current_run_id, baseline_run_id,
-  render_svg_icon("chart", 12),
+  render_svg_icon("chart", 11),
   render_svg_icon("search", 11),
   current_run_id, baseline_run_id,
   format(current_run$total_users[1], big.mark = ","),
